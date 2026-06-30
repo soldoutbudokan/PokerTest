@@ -19,7 +19,9 @@ comparison to published theory.
 | Monte-Carlo CFR | `pokerbot/solve/mccfr.py`, `nlhe_tree.py` | Chance-sampling MCCFR for NLHE over a compiled betting tree (fast). |
 | Agents | `pokerbot/agents/` | The trained bot plus a panel of baselines. |
 | Evaluation | `pokerbot/eval/` | Mirrored-deal arena (mbb/100 + 95% CIs), best-response exploitability. |
+| Metrics | `pokerbot/metrics.py` | Single source of truth for all objective numbers. |
 | Report | `pokerbot/evaluate.py` | Runs every objective check and writes `EVALUATION.md`. |
+| Visualizations | `pokerbot/visualize.py` | Renders `figures/*.png` (dashboard, convergence, win rates, push/fold grid). |
 
 ## The objective evaluation
 
@@ -49,11 +51,40 @@ honest metric, so it's front and center here.
 ## Reproduce
 
 ```bash
-pip install numpy pytest          # numpy is optional; only pytest is needed to test
+pip install numpy pytest matplotlib   # numpy/matplotlib optional; pytest for tests
 python -m pokerbot.evaluate --quick                # fast pass
 python -m pokerbot.evaluate --out EVALUATION.md    # the committed report
+python -m pokerbot.visualize --level standard      # writes figures/
 pytest -q                                          # correctness tests
 ```
+
+## Visualizations
+
+`figures/dashboard.png` is the at-a-glance panel; the individual figures live
+beside it.
+
+![dashboard](figures/dashboard.png)
+
+- **Solver convergence** — Kuhn & Leduc exploitability falling toward 0 (Nash).
+- **Bot vs baselines** — win rate in bb/100 with 95% CIs (green = beats, red = loses).
+- **In-abstraction exploitability** — a best response's win rate vs the bot as it
+  trains; the plateau is a lower bound on how exploitable the bot is.
+- **Push/fold grid** — the 13×13 hand grid of the 10 BB SB jam range vs Nash.
+- **Pre-flop aggression** — the bot's 20 BB opening strategy.
+- **Progress over time** — `metrics_history.csv` plotted across days (filled in
+  by the daily routine).
+
+## Improving the bot daily
+
+`routines/daily_improvement.md` is a standalone prompt for an autonomous daily
+run: it records the current bot's metrics, tries **one** scoped improvement,
+measures it with the same objective evaluation, and keeps the change only if it
+is a real, regression-free win — appending a row to `metrics_history.csv` and an
+entry to `EXPERIMENTS.md` either way.
+
+**`DEPENDENCIES.md` is required reading before changing anything** — it maps what
+moves when you touch each piece (e.g. change the abstraction ⇒ the bot, every
+figure, and the report all change).
 
 ## Method notes
 

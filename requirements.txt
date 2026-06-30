@@ -1,0 +1,4 @@
+# Core package is pure standard library. These enable the extras:
+numpy        # vectorized helpers (optional for the core, used by visualize)
+matplotlib   # pokerbot.visualize figures
+pytest       # test suite
