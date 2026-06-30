@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+# Trained-strategy dumps and scratch artifacts (regenerate via the code).
+scratch_*.json
+*.strategy.json
+.DS_Store
