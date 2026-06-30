@@ -226,8 +226,11 @@ def matchup_value(game: NLHEGame, strat0: TabularStrategy,
         total += x
         sq += x * x
     mean = total / num_deals
-    var = max(0.0, sq / num_deals - mean * mean)
-    return mean, math.sqrt(var / num_deals)
+    if num_deals > 1:
+        # Unbiased sample variance (n-1 denominator) for the standard error.
+        var = max(0.0, (sq - num_deals * mean * mean) / (num_deals - 1))
+        return mean, math.sqrt(var / num_deals)
+    return mean, float("inf")
 
 
 class FastExploiterCFR:

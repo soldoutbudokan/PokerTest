@@ -85,17 +85,21 @@ class TabularStrategy:
 
 
 class CFRSolver:
+    """Object-tree CFR with **simultaneous** updates (both players each pass).
+
+    Simultaneous updates pair correctly with a single global per-iteration
+    discount.  Alternating updates (one player per iteration) need a *per-player*
+    discount schedule; that variant lives in :class:`pokerbot.solve.tree.TreeCFR`,
+    which tracks each player's own iteration count.
+    """
+
     def __init__(self, game: Game, variant: str = "dcfr",
-                 alpha: float = 1.5, beta: float = 0.0, gamma: float = 2.0,
-                 alternating: bool = False):
+                 alpha: float = 1.5, beta: float = 0.0, gamma: float = 2.0):
         if variant not in ("vanilla", "cfr+", "dcfr", "linear"):
             raise ValueError(f"unknown variant {variant!r}")
         self.game = game
         self.variant = variant
         self.alpha, self.beta, self.gamma = alpha, beta, gamma
-        # Alternating updates (one player per iteration) converge faster than
-        # simultaneous updates and are the standard pairing for CFR+/DCFR.
-        self.alternating = alternating
         self.nodes: Dict[str, _Node] = {}
         self.iterations = 0
 
@@ -109,12 +113,9 @@ class CFRSolver:
     def run(self, iterations: int) -> None:
         for _ in range(iterations):
             self.iterations += 1
-            if self.alternating:
-                update_player = (self.iterations - 1) % 2
-            else:
-                update_player = None
-            self._cfr(self.game.new_initial_state(), 1.0, 1.0, 1.0,
-                      update_player)
+            # Simultaneous updates: both players' regrets are updated each pass,
+            # so a single global discount per iteration is correct.
+            self._cfr(self.game.new_initial_state(), 1.0, 1.0, 1.0, None)
             self._discount(self.iterations)
 
     def _discount(self, t: float) -> None:
