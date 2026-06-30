@@ -29,14 +29,15 @@ def main():
     summary = flatten(m)
     print(json.dumps(summary, indent=2), flush=True)
 
+    # Append history first so the progress chart includes today's point.
+    if not args.no_history:
+        append_history(summary, args.date)
+        print(f"appended metrics_history.csv for {args.date}", flush=True)
+
     written = generate(m)
     print("figures:", flush=True)
     for p in written:
         print("  " + p, flush=True)
-
-    if not args.no_history:
-        append_history(summary, args.date)
-        print(f"appended metrics_history.csv for {args.date}", flush=True)
 
 
 if __name__ == "__main__":
