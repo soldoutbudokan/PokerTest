@@ -16,6 +16,27 @@ current bot with the project's objective evaluation, and:
 Never ship a regression. Never invent results — run the code and report what it
 prints.
 
+## Scheduling requirement (read once, when setting this up)
+
+This routine only works if the scheduled session is a **checkout of the repo**.
+The schedule/trigger MUST be bound to the `soldoutbudokan/PokerTest` repository as
+its **source** (via the Claude Code web app's scheduled-sessions / Automations
+UI) — not merely pointed at a compute environment. A source-bound session clones
+the repo and wires up the authenticated git proxy; a source-less one boots into
+an empty home directory with no way to clone (no proxy, no credentials).
+
+## Preflight (do this before anything else)
+
+```bash
+# Are we actually in the repo? If not, STOP — do not guess a clone URL or hunt
+# for credentials. This is a scheduling misconfiguration (see above), not a task.
+test -f pokerbot/metrics.py && test -d .git \
+  || { echo "REPO NOT CHECKED OUT — trigger is not bound to the repo source. Report and stop."; exit 1; }
+```
+
+If the preflight fails, report that the schedule is missing its repository source
+binding and end the run. Do not fabricate metrics or partial results.
+
 ## 0. Orient (read these first, in order)
 
 1. `README.md` — what the project is.
