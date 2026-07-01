@@ -1,2 +1,3 @@
 date,level,kuhn_exploitability,leduc_exploitability,nlhe_exploitability_bb100,nlhe_infosets,win_vs_random,win_vs_call_station,win_vs_maniac,win_vs_tight_aggressive,pushfold_jam_pct
 2026-06-30,standard,0.002265,0.0046,2.805,3980,50.57,101.94,60.0,-12.48,62.1
+2026-07-01,standard,0.002265,0.0046,3.289,5772,63.71,111.05,65.28,8.37,62.1

@@ -27,11 +27,10 @@ Distinct hand values: **7462** (expected 7462). All categories correct: **True**
 | 10 | 0.143718 | -0.08651 |
 | 100 | 0.011351 | -0.05665 |
 | 1000 | 0.002918 | -0.05563 |
-| 10000 | 0.002028 | -0.05558 |
-| 20000 | 0.001242 | -0.05557 |
+| 8000 | 0.002265 | -0.05557 |
 
 Analytic Nash value to player 0 is **-1/18 = -0.05556**; measured **-0.05557**.
-Recovered strategy lies on the analytic one-parameter family: bet(J)=α=0.253 ∈ [0, 1/3], bet(K)=0.749 ≈ 3α, call(Q|bet)=0.585 ≈ α+1/3.
+Recovered strategy lies on the analytic one-parameter family: bet(J)=α=0.256 ∈ [0, 1/3], bet(K)=0.751 ≈ 3α, call(Q|bet)=0.587 ≈ α+1/3.
 
 ## 3. Leduc hold'em — exploitability driven low
 
@@ -43,27 +42,27 @@ Exact game tree: **1936 nodes**, **288 information sets**.
 | 100 | 0.064486 |
 | 1000 | 0.020735 |
 | 10000 | 0.007865 |
-| 50000 | 0.003990 |
+| 20000 | 0.006309 |
 
 Exploitability decreases monotonically toward 0, confirming the solver converges to a Nash equilibrium of the exact game.
 
 ## 4. No-Limit Hold'em bot
 
-**Setup**: heads-up, 20 BB effective, pot-sized bets + all-in, made-hand-strength card abstraction (169 pre-flop + 8 post-flop buckets/street). Trained with chance-sampling MCCFR for **200,000 deals** (3,980 info sets, 144s).
+**Setup**: heads-up, 20 BB effective, pot-sized bets + all-in, made-hand-strength card abstraction (169 pre-flop + 8 post-flop buckets/street). Trained with chance-sampling MCCFR for **120,000 deals** (5,772 info sets, 87s).
 
 ### 4a. Win rate vs baseline opponents
 (mirrored/duplicate deals for variance reduction; 95% CI)
 
 | Opponent | bb/100 | mbb/100 | 95% CI (bb/100) | Significant |
 |---|---|---|---|---|
-| random | +72.40 | +72400 | [+59.42, +85.38] | yes |
-| call-station | +88.61 | +88609 | [+74.73, +102.49] | yes |
-| maniac | +64.46 | +64463 | [+49.58, +79.35] | yes |
-| tight-aggressive | -5.78 | -5778 | [-16.54, +4.98] | no |
+| random | +63.71 | +63715 | [+47.24, +80.19] | yes |
+| call-station | +111.05 | +111050 | [+93.47, +128.63] | yes |
+| maniac | +65.28 | +65275 | [+46.47, +84.08] | yes |
+| tight-aggressive | +8.37 | +8370 | [-5.53, +22.27] | no |
 
 ### 4b. In-abstraction exploitability
 
-A best response trained against the fixed bot (200,000 iterations/seat) wins **1.60 bb/100 (1596 mbb/100)** averaged over both seats (seat 0 +6.10, seat 1 -2.91). This is a **lower bound** on the bot's in-abstraction exploitability — how far it sits from the abstract Nash equilibrium — and tightens (rises) as the best response is trained longer. For scale, the bot beats the baselines above by 50–100+ bb/100. [269s]
+A best response trained against the fixed bot (120,000 iterations/seat) wins **-0.84 bb/100 (-841 mbb/100)** averaged over both seats (seat 0 +3.70, seat 1 -5.38). This is a **lower bound** on the bot's in-abstraction exploitability — how far it sits from the abstract Nash equilibrium — and tightens (rises) as the best response is trained longer. For scale, the bot beats the baselines above by 50–100+ bb/100. [180s]
 
 ### 4c. Short-stack push/fold vs Nash theory
 
@@ -72,17 +71,17 @@ SB jam frequency at 10 BB effective (Nash jams ~60-70% of hands):
 | Hand | Jam freq |
 |---|---|
 | AA | 0.99 |
-| TT | 0.98 |
-| 77 | 0.95 |
-| 22 | 0.91 |
+| TT | 0.97 |
+| 77 | 0.94 |
+| 22 | 0.89 |
 | AKo | 0.98 |
-| ATo | 0.97 |
-| A2s | 0.94 |
-| KJo | 0.96 |
-| T9s | 0.88 |
-| 98s | 0.74 |
-| 72o | 0.06 |
+| ATo | 0.96 |
+| A2s | 0.93 |
+| KJo | 0.95 |
+| T9s | 0.85 |
+| 98s | 0.62 |
+| 72o | 0.07 |
 
-Hands jammed >50%: **104/169 = 62%** (Nash 10 BB SB jam range ≈ 60-70%). Strong hands jam ≈1.0, trash folds — qualitatively matching the known push/fold equilibrium.
+Hands jammed >50%: **102/169 = 60%** (Nash 10 BB SB jam range ≈ 60-70%). Strong hands jam ≈1.0, trash folds — qualitatively matching the known push/fold equilibrium.
 
-_Total evaluation time: 511s._
+_Total evaluation time: 311s._

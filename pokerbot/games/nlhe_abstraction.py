@@ -57,14 +57,53 @@ class NullAbstraction(Abstraction):
         return (street, b)
 
 
+def _draw_feature(cards: List[int]) -> int:
+    """Redraw potential of a made hand that isn't final yet (flop/turn only).
+
+    Returns 0 (no meaningful redraw), 1 (weak: backdoor flush or gutshot), or
+    2 (strong: made flush draw or open-ended straight draw). Made-hand
+    strength already lives in the strength bucket; this distinguishes hands
+    that are live going forward from ones that are pure air/showdown-only.
+    """
+    suit_counts = [0, 0, 0, 0]
+    for c in cards:
+        suit_counts[c % 4] += 1
+    flush_draw = max(suit_counts) == 4
+    backdoor_flush = max(suit_counts) == 3
+
+    ranks = set(c // 4 for c in cards)
+    if 12 in ranks:          # ace also plays low (wheel draws)
+        ranks.add(-1)
+    sorted_ranks = sorted(ranks)
+    oesd = gutshot = False
+    for r in sorted_ranks:
+        window = [x for x in sorted_ranks if r <= x <= r + 4]
+        if len(window) >= 4:
+            span = window[-1] - window[0]
+            if span == 3:
+                oesd = True
+            elif span == 4:
+                gutshot = True
+
+    if flush_draw or oesd:
+        return 2
+    if backdoor_flush or gutshot:
+        return 1
+    return 0
+
+
 class StrengthAbstraction(Abstraction):
-    """Equal-probability post-flop strength buckets (boundaries sampled once)."""
+    """Equal-probability post-flop strength buckets (boundaries sampled once),
+    refined on the flop/turn by a redraw-potential feature so the abstraction
+    is no longer draw-blind (made-hand strength alone can't tell a dead
+    middle pair from a middle pair with a flush draw)."""
 
     def __init__(self, postflop_buckets: int = 8, samples: int = 30000,
-                 seed: int = 12345):
+                 seed: int = 12345, draw_aware: bool = True):
         self.nb = postflop_buckets
         self.samples = samples
         self.seed = seed
+        self.draw_aware = draw_aware
         self._thresholds: Optional[dict] = None
 
     def _ensure(self) -> None:
@@ -91,7 +130,8 @@ class StrengthAbstraction(Abstraction):
             return preflop_index(hole)
         self._ensure()
         n = _BOARD_COUNT[street]
-        strength = evaluate(list(hole) + list(board[:n]))
+        cards = list(hole) + list(board[:n])
+        strength = evaluate(cards)
         cuts = self._thresholds[street]
         b = 0
         for c in cuts:
@@ -99,4 +139,9 @@ class StrengthAbstraction(Abstraction):
                 b += 1
             else:
                 break
+        # The river has no future cards to draw to, so the feature is moot
+        # there; keep it flop/turn-only to avoid needlessly splitting river
+        # buckets (which would just add infosets with no signal).
+        if self.draw_aware and street in (1, 2):
+            return (street, b, _draw_feature(cards))
         return (street, b)
