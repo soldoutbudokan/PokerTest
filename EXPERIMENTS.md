@@ -13,6 +13,68 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-04 — more post-flop strength buckets (8 → 12)
+
+**Idea:** backlog item #3. The post-flop strength abstraction uses 8
+equal-probability made-hand buckets per street. Raise it to 12
+(`StrengthAbstraction(postflop_buckets=12)` in `metrics.py`) for finer
+made-hand resolution. This is the same "more abstraction resolution" lever
+that made the 2026-07-01 draw-aware change a win; the tree structure is
+unchanged (buckets only affect information-set keys, not the betting tree), so
+it's a one-line, localized change.
+
+**Hypothesis:** finer strength resolution lets the bot separate hands it was
+previously lumping together and play them more distinctly — expected to lift
+win rate vs the thinking baseline (tight-aggressive) the way the draw feature
+did, without moving exploitability much.
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop +
+draw-aware post-flop buckets, `level="standard"`, seed 0). Only
+`postflop_buckets` changed 8 → 12. Baseline = current committed bot; both
+computed fresh this run at `standard`.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`):
+
+| Metric | Baseline (8) | Candidate (12) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | 3.227 | −0.062 (inside the 1–2 bb/100 noise band — flat) |
+| `nlhe_infosets` | 5,772 | 7,644 | +1,872 (+32%) |
+| `win_vs_random` | +63.71 (±16.5) | +71.03 (±16.5) | +7.32 (within CI) |
+| `win_vs_call_station` | +111.05 (±17.6) | +101.01 (±17.7) | **−10.04** (within CI) |
+| `win_vs_maniac` | +65.28 (±18.8) | +57.97 (±18.8) | **−7.31** (within CI) |
+| `win_vs_tight_aggressive` | +8.37 (±13.9) | **−5.08** (±14.1) | **−13.45** (≈ its 95% CI half-width; flips from non-significantly beating TAG to non-significantly losing) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched paths) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (push/fold uses its own coarse abstraction, unaffected) |
+
+Best-response exploitability stayed positive at convergence
+(`[[10000,-29.64],[25000,-18.44],[50000,-9.04],[100000,-1.27],[150000,3.23]]`,
+same shape and sign as baseline — BR invariant holds).
+
+**Gate check:**
+- `pytest -q` (via `python -m pytest -q`) green: 31 passed.
+- Invariants hold: Kuhn/Leduc unchanged; bot still beats
+  random/call-station/maniac by a wide, significant margin (all `sig=True`);
+  BR exploitability ends positive (+3.23 ≥ 0).
+- Primary metric did **not** improve: `nlhe_exploitability_bb100` moved
+  −0.062 bb/100 (noise, not signal), and `win_vs_tight_aggressive` moved the
+  **wrong** way by −13.45 bb/100.
+- Net effect is negative: three of four win-rate categories dropped (TAG,
+  call-station, maniac), only `random` rose; none crossed its 95% CI, so no
+  single category is a *significant* regression, but there is no win to keep.
+  The +32% larger abstraction fragmented the fixed 120k-deal training budget
+  without paying for itself.
+
+**Verdict: NO CHANGE.** Reverted the code (`postflop_buckets` stays 8). No
+figures/`EVALUATION.md` regenerated (bot unchanged). Appended today's history
+row from the (kept) baseline metrics so the series stays continuous.
+
+**Note for future runs:** more strength buckets at the current training budget
+is a net wash-to-loss. If revisited, pair it with more training deals (a new
+higher level or budget bump) so the finer abstraction can actually converge —
+raising resolution and iteration count together, not resolution alone.
+
+---
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
