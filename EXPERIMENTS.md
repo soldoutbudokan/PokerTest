@@ -13,6 +13,68 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-05 — finer post-flop strength buckets (8 → 12)
+
+**Idea:** backlog item #3 — refine the post-flop card abstraction from 8 to 12
+equal-probability made-hand-strength buckets (`StrengthAbstraction(
+postflop_buckets=12)` in `metrics.py` and `evaluate.py`). A finer strength
+grid should let the bot separate hands it currently lumps together (e.g. a
+strong second pair vs a weak top pair), on top of the draw feature already
+shipped on 2026-07-01.
+
+**Hypothesis:** more granular strength resolution moves the abstraction closer
+to the true game, so either in-abstraction exploitability drops or head-to-head
+strength (notably vs tight-aggressive) rises — the same mechanism that made the
+draw-aware split a win.
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop
+buckets, draw-aware flop/turn split), same `level="standard"` MCCFR
+training/eval budget, same seeds. Only `postflop_buckets` changed (8 → 12).
+Smoke test green: `python -m pytest -q` → 31 passed; `visualize --level quick`
+ran the full pipeline without error.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`):
+
+| Metric | Baseline (8) | Candidate (12) | Δ | vs baseline 95% CI |
+|---|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | 3.227 | **-0.062** | flat — far inside the 1–2 bb/100 noise band |
+| `nlhe_infosets` | 5,772 | 7,644 | +32% | (expected — finer abstraction) |
+| `win_vs_random` | +63.71 | +71.03 | +7.32 | within ±16.47 (z=+0.61) |
+| `win_vs_call_station` | +111.05 | +101.01 | -10.04 | within ±17.58 (z=-0.79) |
+| `win_vs_maniac` | +65.28 | +57.97 | -7.31 | within ±18.80 (z=-0.54) |
+| `win_vs_tight_aggressive` | **+8.37** | **-5.08** | **-13.45** | within ±13.90 (z=-1.33) — but flips from beating to losing TAG |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged | untouched code path |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged | pre-flop only, unaffected |
+
+Best-response exploitability stayed positive throughout training (BR invariant
+holds): candidate curve `[-29.64, -18.44, -9.04, -1.27, 3.23]` vs baseline
+`[-28.87, -17.97, -8.81, -0.99, 3.29]` — same shape, same sign at convergence.
+
+**Gate check:**
+- `pytest -q` (via `python -m pytest -q`) green: 31 passed.
+- Invariants: Kuhn/Leduc untouched and unchanged; bot still crushes
+  random/call-station/maniac by a wide significant margin (all CIs clear of 0);
+  BR exploitability ends positive (3.227 ≥ 0). All hold.
+- Primary metric: **neither path improved.** `nlhe_exploitability_bb100` moved
+  only -0.062 bb/100 (inside the noise band, not a signal), and
+  `win_vs_tight_aggressive` moved the *wrong* way (+8.37 → -5.08), so it did
+  not rise beyond its CI.
+- No formal regression: no `win_vs_*` category dropped by more than its 95% CI
+  half-width (the largest drop, TAG's -13.45, sits just inside ±13.90,
+  z=-1.33). But TAG flipping from a (non-significant) win to a (non-significant)
+  loss, with exploitability flat, is the opposite of the hypothesised win.
+
+**Verdict: NO CHANGE.** The primary metric did not improve beyond noise and the
+one category we hoped to gain on (TAG) got worse, so the finer bucketing is not
+a real, regression-free improvement. Reverted the code change (`postflop_buckets`
+back to 8) and restored the committed figures; kept only the history row and this
+notebook entry so the trail stays continuous. Interpretation: at the fixed
+`standard` training budget, adding ~32% more info sets spreads the same MCCFR
+samples thinner, and the extra strength granularity doesn't pay for itself — a
+finer abstraction needs more training to fill in, which is a separate experiment.
+
+---
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
