@@ -13,6 +13,71 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-06 — finer post-flop strength buckets (8 → 12)
+
+**Idea:** the post-flop card abstraction uses equal-probability made-hand-strength
+buckets. Refine the resolution from **8 → 12** buckets/street
+(`StrengthAbstraction(postflop_buckets=8)` → `12` in `metrics.py` and
+`evaluate.py`, `draw_aware=True` kept), so the bot can separate, e.g., a strong
+top-pair from a weak top-pair and play them differently. The betting tree is
+card-independent, so this changes only the information-set count (594 tree nodes
+either way), not the tree shape — a mild, localized change of the same magnitude
+as the 2026-07-01 draw-aware refinement (which was a real win).
+
+**Hypothesis:** finer strength resolution is a strength win against a *thinking*
+opponent, so `win_vs_tight_aggressive` (the metric with the most headroom) should
+rise, ideally with exploitability flat or lower.
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop
+buckets, draw-aware flop/turn feature), same `level="standard"` MCCFR
+training/eval budget (120k training deals), same seed=0. Only `postflop_buckets`
+changed. Baseline (`postflop_buckets=8`) reproduced the committed 2026-07-01
+numbers exactly (deterministic pipeline confirmed) before the candidate ran.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`):
+
+| Metric | Baseline (8) | Candidate (12) | Δ | Read |
+|---|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | 3.227 | **−0.062** | noise (≪ the routine's 1–2 bb/100 band) |
+| `nlhe_infosets` | 5,772 | 7,644 | **+32%** | expected — finer abstraction |
+| `win_vs_tight_aggressive` | **+8.37** (CI ±13.90) | **−5.08** (CI ±14.07) | **−13.45** | wrong direction; the intended win regressed |
+| `win_vs_call_station` | +111.05 (CI ±17.58) | +101.01 (CI ±17.69) | −10.04 | within CI (not significant) |
+| `win_vs_maniac` | +65.28 (CI ±18.80) | +57.97 (CI ±18.77) | −7.31 | within CI (not significant) |
+| `win_vs_random` | +63.71 (CI ±16.47) | +71.03 (CI ±16.50) | +7.32 | within CI (not significant) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged | untouched code paths (isolation confirmed) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged | push/fold is a separate preflop-only 10 BB solve |
+
+Best-response exploitability stayed positive throughout and essentially tracked
+the baseline curve (BR invariant holds): baseline
+`[[10000,-28.87],[25000,-17.97],[50000,-8.81],[100000,-0.99],[150000,3.29]]`
+vs candidate
+`[[10000,-29.64],[25000,-18.44],[50000,-9.04],[100000,-1.27],[150000,3.23]]`
+— same shape, ends positive (+3.23 ≥ 0).
+
+**Gate check:**
+- `pytest -q` (via `python -m pytest -q`, see 2026-07-01 environment note) green:
+  31 passed.
+- Invariants intact: Kuhn/Leduc unchanged; bot still crushes
+  random/call-station/maniac by wide, significant margins; BR exploitability ends
+  ≥ 0.
+- **Primary metric did NOT improve.** Exploitability moved −0.062 bb/100 (pure
+  noise), and the intended target `win_vs_tight_aggressive` moved the **wrong
+  way** by 13.45 bb/100. All win-rate deltas sit within their (wide) CIs, so none
+  is a *statistically significant* regression — but three of four baselines drift
+  down and the target metric worsens, so this is not a win.
+
+**Why:** the tree is unchanged, so the +32% extra information sets are trained on
+the *same* 120k deals — the finer buckets are simply undertrained, fragmenting
+the strategy without a convergence or strength payoff. Finer card abstraction is
+a "needs more training to pay off" lever; at a fixed budget it does not help here.
+
+**Verdict: NO CHANGE (leans mild regression).** Reverted the change (kept
+`postflop_buckets=8`). Appended today's history row using the **baseline** metrics
+(the shipped bot is unchanged) and left `EVALUATION.md`/`figures/` untouched.
+Follow-up if revisited: pair a bucket increase with a proportional training-budget
+increase, or spend the extra buckets only where they matter (e.g. more resolution
+at the top of the strength range) rather than uniformly.
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
