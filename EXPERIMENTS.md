@@ -13,6 +13,70 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-08 — train the NLHE bot longer (120k → 300k MCCFR deals)
+
+**Idea:** backlog #1. MCCFR converges ~O(1/√T), so training the bot on more
+sampled deals should push it closer to the abstract Nash equilibrium and lower
+its exploitability. Bumped `LEVELS["standard"]` `nlhe_train` 120,000 → 300,000
+(2.5×), and `LEVELS["full"]` 250k → 600k to preserve level ordering. Deliberately
+kept a **single variable**: the best-response budget (`expl_max=150000`),
+eval pairs, and push/fold training were all left unchanged so any move in the
+metric is attributable to bot training alone.
+
+**Hypothesis:** a more-converged bot is less exploitable, so
+`nlhe_exploitability_bb100` should fall (below the baseline 3.289) while the
+wide win-rate margins vs random/call-station/maniac hold.
+
+**Setup:** identical to baseline except bot training deals (heads-up 20 BB,
+pot + all-in, 169 pre-flop + 8 draw-aware post-flop buckets), `level="standard"`,
+same seed. Baseline computed on the committed 120k code, candidate on the 300k
+code; both at `standard`. Candidate training/eval took ~774s.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`):
+
+| Metric | Baseline (120k) | Candidate (300k) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | **+3.289** | **−5.367** | −8.66 — but **negative = invariant #5 broken** (see below) |
+| `nlhe_infosets` | 5,772 | 5,772 | unchanged (same abstraction) |
+| `win_vs_random` | +63.71 (CI 16.47) | +83.41 (CI 16.62) | +19.70 |
+| `win_vs_call_station` | +111.05 (CI 17.58) | +102.43 (CI 17.28) | −8.62 (within CI, still crushes) |
+| `win_vs_maniac` | +65.28 (CI 18.80) | +64.22 (CI 18.72) | −1.06 (noise) |
+| `win_vs_tight_aggressive` | **+8.37** (CI 13.90) | **−5.41** (CI 13.14) | **−13.77** ≈ its 95% CI — flips from beating to losing TAG |
+| `kuhn` / `leduc` exploitability | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (solver untouched) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged |
+
+Best-response curve (BR iters → bb/100), baseline vs candidate — the **whole
+curve shifted down**:
+`10k: -28.9→-35.0 · 25k: -18.0→-25.5 · 50k: -8.8→-17.0 · 100k: -1.0→-9.7 ·
+150k: +3.29→-5.37`.
+
+**Gate check — FAILS:**
+- `pytest -q` green (31 passed) and Kuhn/Leduc invariants unchanged. ✅
+- **Invariant #5 BROKEN:** the best response ends at **−5.367 bb/100 < 0**.
+  DEPENDENCIES.md: "A best response to the bot must be ≥ ~0 bb/100 (a negative
+  number means the exploiter is under-trained or the measurement is wrong —
+  never ship on it)." The apparent exploitability "improvement" is a
+  **measurement artifact**: holding the BR budget at 150k while the bot trained
+  2.5× longer left the exploiter under-trained relative to the now-stronger bot,
+  so it can no longer even break even. This is not a genuine reduction in true
+  exploitability — the number is simply no longer a valid lower bound.
+- **Regression:** `win_vs_tight_aggressive` dropped 13.77 bb/100 (≈ its 95% CI),
+  flipping from +8.37 to −5.41 — the wrong direction for the secondary gate
+  metric.
+
+**Verdict: NO CHANGE (REGRESSION).** Reverted the `LEVELS` change; kept the
+history row + this note. A real exploitability gain from longer training would
+require scaling the best-response budget (`expl_max`) in lock-step so the metric
+stays a valid ≥0 lower bound — but that is a second, confounded variable, out of
+scope for a one-idea run. Worth revisiting as a paired "train bot **and**
+exploiter longer" experiment.
+
+**Environment note:** as in prior runs, bare `pytest -q` fails collection
+(`ModuleNotFoundError: pokerbot`) because the console script omits cwd from
+`sys.path`; `python -m pytest -q` passes cleanly (31). Not a code regression.
+
+---
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
