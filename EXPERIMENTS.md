@@ -13,6 +13,64 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-09 — train the NLHE bot 3× longer (120k → 360k MCCFR deals)
+
+**Idea:** backlog item #1, "train longer." MCCFR converges ~O(1/√T), so more
+deals should push the bot closer to the abstract Nash equilibrium and lower its
+exploitability. Changed only the third element of `LEVELS["standard"]` in
+`metrics.py` (`nlhe_train` 120000 → 360000); every other budget (Kuhn 8k, Leduc
+30k, `eval_pairs` 5000, `expl_max` 150k, `expl_eval` 50k, `pf_train` 250k) left
+identical so the eval harness stays comparable and the Kuhn/Leduc/push-fold
+paths are untouched.
+
+**Hypothesis:** `nlhe_exploitability_bb100` drops beyond the 1–2 bb/100 noise
+band with no baseline win rate regressing.
+
+**Setup:** identical to baseline except the bot's training-deal count. Same seed,
+same `level="standard"` eval budgets. Baseline = 120k deals, candidate = 360k.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`):
+
+| Metric | Baseline (120k) | Candidate (360k) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | **+3.289** | **−6.838** | −10.13 — but **negative ⇒ invalid** (see below) |
+| `nlhe_infosets` | 5,772 | 5,772 | unchanged (abstraction untouched) |
+| `win_vs_random` | +63.71 (±16.47) | +71.34 (±16.27) | +7.63 (within CIs) |
+| `win_vs_call_station` | +111.05 (±17.58) | +109.95 (±17.26) | −1.10 (noise) |
+| `win_vs_maniac` | +65.28 (±18.80) | +67.70 (±18.56) | +2.42 (noise) |
+| `win_vs_tight_aggressive` | **+8.37** (±13.90) | **−11.62** (±13.13) | **−19.99 — regression, exceeds both CIs** |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched paths) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (push-fold budget untouched) |
+
+Candidate best-response curve was **negative at every checkpoint**:
+`[[10000,-35.93],[25000,-26.63],[50000,-18.38],[100000,-11.11],[150000,-6.84]]`
+(baseline ended at +3.29).
+
+**Gate check:**
+- `pytest -q` green (31 passed) and the quick pipeline still runs.
+- **Invariant #5 BROKEN.** DEPENDENCIES.md requires the best response to win
+  ≥ ~0 bb/100; a negative value means the exploiter is under-trained and the
+  measurement is invalid — "never ship on it." Tripling the bot's training
+  while holding the BR exploiter budget fixed at `expl_max=150k` let the
+  stronger bot outrun its fixed-budget exploiter, so the lower bound collapsed
+  to −6.84. The apparent exploitability "improvement" is an artifact of an
+  under-resourced exploiter, not a real gain. A valid "train longer" test would
+  have to scale `expl_max` up in step — which would change the eval harness and
+  break baseline/candidate comparability.
+- **Regression on TAG.** `win_vs_tight_aggressive` fell +8.37 → −11.62, a drop
+  of ~20 bb/100 that exceeds both the baseline (±13.90) and candidate (±13.13)
+  95% CIs — a real regression, not noise. (It landed back near the pre-draw-aware
+  −12.48, suggesting the +8.37 was itself near the noisy edge.)
+- Wins vs random/call-station/maniac moved within their CIs.
+
+**Verdict: REGRESSION.** Reverted the code (`metrics.py` back to
+`nlhe_train=120000`); kept the history row (baseline metrics, so continuity is
+preserved) and this entry. **Lesson for a future run:** "train longer" is only
+measurable if the best-response exploiter budget scales with the bot's training;
+otherwise the exploitability metric silently goes invalid.
+
+---
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
