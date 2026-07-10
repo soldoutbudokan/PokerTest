@@ -13,6 +13,73 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-10 — DCFR average-strategy discount (γ=2) for the NLHE trainer
+
+**Idea:** the NLHE bot trainer (`FastNLHECFR`) is CFR+ with *linear*
+average-strategy weighting — each iteration `t`'s strategy contribution is added
+with weight `t` (γ=1). The exact solver (`CFRSolver`/`TreeCFR`) already defaults
+to Discounted CFR with γ=2, which down-weights the noisier early iterations more
+aggressively and empirically sits closer to Nash at the same iteration count.
+Backlog item "DCFR tuning". Ported just the γ term into the fast MCCFR trainer:
+weight iteration `t` by `t ** γ`. Under end-normalisation this is *exactly*
+equivalent to DCFR's per-iteration `(t/(t+1)) ** γ` discount of the accumulated
+strategy sum (the common `T ** γ` factor cancels), but costs one `pow` per
+iteration instead of a full node sweep. Added `gamma` to `FastNLHECFR`
+(**default 1.0 = previous behaviour**, so tests, the exploiter and the push/fold
+trainer are untouched) and set the bot trainer in `nlhe_metrics` to γ=2.0. Same
+tree and same abstraction → **infoset count unchanged (5,772)**, so no
+undertraining-from-a-bigger-model risk.
+
+**Hypothesis:** quadratic averaging tightens the exported average strategy toward
+the abstract Nash equilibrium, lowering `nlhe_exploitability_bb100` at no tree
+cost.
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop + 8
+draw-aware post-flop buckets), same `level="standard"`, same seeds. Baseline =
+current committed code (γ=1); candidate = γ=2 bot trainer only. Baseline
+reproduced the committed 2026-07-01 row bit-for-bit (determinism confirmed).
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`):
+
+| Metric | Baseline (γ=1) | Candidate (γ=2) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | 1.543 | **−1.746** (whole exploit curve shifted down uniformly, but Δ sits **inside** the routine's stated 1–2 bb/100 noise band) |
+| `nlhe_infosets` | 5,772 | 5,772 | 0 (unchanged — same tree/abstraction) |
+| `win_vs_random` | +63.71 (±16.47) | +67.40 (±16.20) | +3.69 |
+| `win_vs_call_station` | +111.05 (±17.58) | +107.57 (±17.68) | −3.48 (within CI) |
+| `win_vs_maniac` | +65.28 (±18.80) | +60.08 (±18.61) | −5.20 (within CI) |
+| `win_vs_tight_aggressive` | **+8.37** (±13.90) | **−2.44** (±13.79) | **−10.81** (within CI, but flips from beating to losing TAG; 78% of its CI) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched code path) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (push/fold trainer left at γ=1) |
+
+Candidate exploit curve `[[10000,-30.08],[25000,-19.46],[50000,-10.52],
+[100000,-2.77],[150000,1.54]]` vs baseline `[...,-0.99,3.29]`: every point lower
+(bot exploited less at every exploiter budget), and the endpoint stays **positive**
+so the BR invariant holds. A cheap `quick`-budget A/B independently showed the
+same direction (γ1 +0.42 → γ2 −2.39).
+
+**Gate check:**
+- `pytest -q` (`python -m pytest -q`) green: 31 passed.
+- Invariants all hold: Kuhn/Leduc unchanged; bot still crushes
+  random/call-station/maniac by wide significant margins; BR exploitability ends
+  positive (+1.543 ≥ 0).
+- **Primary metric:** exploitability improved by 1.746 bb/100 — real-looking
+  (uniform curve shift + independent smoke test) but **within the routine's
+  explicit 1–2 bb/100 noise band**, so not confidently beyond noise. The other
+  primary path (`win_vs_tight_aggressive`) moved the *wrong* way.
+- **Regression:** no `win_vs_*` category drops beyond its 95% CI, so no
+  *statistically significant* regression — but three of four categories softened
+  and TAG flipped from +8.37 to −2.44 (78% of its CI) on the flagship head-to-head.
+
+**Verdict: NO CHANGE.** The exploitability gain is promising but sits inside the
+routine's declared noise band, and it comes alongside a broad win-rate softening
+(TAG flipping negative). Per the routine's "if unsure whether something is noise,
+treat it as noise (don't ship)," the code change was **reverted**; only this log
+entry and the (baseline) history row are committed. Worth revisiting with the
+exploiter *also* on DCFR (for a tighter, more trustworthy bound) and/or more
+training iterations to confirm whether the exploitability edge survives — the
+`gamma` hook makes that a one-line follow-up.
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
