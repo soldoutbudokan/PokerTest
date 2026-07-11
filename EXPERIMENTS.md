@@ -13,6 +13,70 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-11 — train the NLHE bot 4× longer (120k → 480k MCCFR deals)
+
+**Idea:** backlog item #1. At `standard`, the bot trains for 120,000
+chance-sampled MCCFR deals over 5,772 info sets — only ~20 visits/infoset on
+average, which is under-trained. Raised `standard`'s `nlhe_train` in
+`metrics.py:LEVELS` from 120,000 to 480,000 (4×), leaving the card/action
+abstraction, evaluation budgets, and the best-response exploiter budget
+(`expl_max=150k`, `expl_eval=50k`) untouched. Only the bot's training length
+changed, so the abstraction isn't diluted.
+
+**Hypothesis:** MCCFR converges ~O(1/√T), so 4× training moves the bot closer
+to the abstract Nash and should *lower* the best-response exploitability lower
+bound. Chosen as the safest backlog item: more training can only make the bot
+harder to exploit in expectation — worst case "no change," never a regression.
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop +
+8 post-flop draw-aware buckets), same seed, same `level="standard"` for baseline
+and candidate. Baseline = the committed 120k bot; candidate = the same code with
+`nlhe_train=480000`.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`):
+
+| Metric | Baseline (120k) | Candidate (480k) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | **+3.289** | **−9.09** | **INVALID** — negative BR ⇒ exploiter under-trained (see below) |
+| `nlhe_infosets` | 5,772 | 5,772 | 0 (same abstraction, as intended) |
+| `win_vs_random` | +63.71 | +66.79 | +3.08 (within noise) |
+| `win_vs_call_station` | +111.05 | +106.75 | −4.30 (within CI) |
+| `win_vs_maniac` | +65.28 | +51.96 | −13.32 (within baseline CI ±18.8 — not significant, but notable) |
+| `win_vs_tight_aggressive` | +8.37 | +7.40 | −0.97 (within noise) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched code path) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (`pf_train` untouched — good sanity check) |
+
+**What happened — the exploiter budget is coupled to the bot's training
+budget.** The primary metric, `nlhe_exploitability_bb100`, is a *lower bound*
+produced by training a best response (150k iters/seat) against the fixed bot and
+measuring how much it wins. It is only meaningful when the exploiter is
+adequately trained. The 4×-trained bot became strong enough that the
+fixed-150k best response can no longer even break even against it, driving the
+measured value **negative (−9.09)**. Per `DEPENDENCIES.md` invariant #5, a
+negative best-response result means the exploiter is under-trained / the
+measurement is wrong — **never ship on it**. So the candidate's primary metric
+is invalid, not improved: the bot is very likely stronger (harder to exploit,
+`win_vs_random` up), but this run's protocol cannot confirm it.
+
+**Gate check:**
+- `pytest -q` (`python -m pytest -q`): 31 passed.
+- Invariants: Kuhn/Leduc unchanged and low. **Invariant #5 VIOLATED** — best
+  response to the candidate is −9.09 bb/100 (< 0). Disqualifying on its own.
+- Primary metric: not validly improved (negative BR ⇒ invalid). No `win_vs_*`
+  category improved beyond its 95% CI.
+- No `win_vs_*` regressed beyond its CI, but that does not rescue the run.
+
+**Verdict: NO CHANGE (measurement invalidated).** Reverted the `nlhe_train`
+bump; kept the code at 120k. Appended today's (baseline) row to
+`metrics_history.csv` and this entry. **Follow-up for the backlog:** "train
+longer" needs the best-response exploiter budget (`expl_max`) scaled up in
+lock-step so the exploitability lower bound stays valid — otherwise a stronger
+bot silently breaks its own measurement. A future run should raise `expl_max`
+(and possibly `expl_eval`) alongside `nlhe_train` and re-establish a matched
+baseline before judging.
+
+---
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
