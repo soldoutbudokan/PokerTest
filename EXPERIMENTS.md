@@ -13,6 +13,65 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-12 — richer bet sizing (add a 0.5-pot bet)
+
+**Idea:** the action abstraction offered only a pot-sized bet + all-in. Backlog
+item #2 suggested adding a half-pot size (`bet_sizes=(0.5, 1.0)`) so the bot can
+size its bets more finely — the standard lever for shrinking action-abstraction
+exploitability in NLHE. Change was a single line in `nlhe_metrics`
+(`bet_sizes=(1.0,)` → `bet_sizes=(0.5, 1.0)`); everything downstream (legal
+actions, labels, tree build, preflop grid) already handles multiple sizes
+generically, so nothing else needed touching. **Training budget was held
+identical** (same `level="standard"`, same 120k deals, same seed) so the history
+rows stay comparable.
+
+**Hypothesis:** a finer bet menu lets the bot approximate a mixed/geometric
+sizing strategy, lowering `nlhe_exploitability_bb100` and/or giving it tools to
+out-play the tight-aggressive opponent.
+
+**Setup:** identical to baseline except `bet_sizes=(0.5, 1.0)` (heads-up 20 BB,
+169 pre-flop + 8 draw-aware post-flop buckets, `max_raises_per_street=3`), same
+`level="standard"` MCCFR training/eval budget, same seed 0.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`):
+
+| Metric | Baseline | Candidate | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | **4.733** | **+1.444 (WORSE)** — full BR curve worse at convergence (150k: 3.29→4.73) |
+| `nlhe_infosets` | 5,772 | 61,802 | **+970%** — the half-pot size explodes the betting tree |
+| `win_vs_random` | +63.71 (CI±16.47) | +90.66 (CI±17.21) | +26.95 (better, sig) |
+| `win_vs_call_station` | +111.05 (CI±17.58) | +105.88 (CI±17.42) | −5.17 (within CI, noise) |
+| `win_vs_maniac` | +65.28 (CI±18.80) | +68.95 (CI±18.92) | +3.67 (within CI, noise) |
+| `win_vs_tight_aggressive` | **+8.37** (CI±13.90, not sig) | **−15.78** (CI±13.96, **sig**) | **−24.15 — a REGRESSION** far beyond either 95% CI; the bot flips from (non-sig) beating TAG to *significantly losing* to it |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched path — confirms isolation) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (push/fold uses `bet_sizes=()`, unaffected) |
+
+**Gate check:**
+- `pytest -q` (via `python -m pytest -q`): green, 31 passed.
+- Invariants intact: Kuhn/Leduc unchanged; push/fold 62.1% (in the Nash 60–70%
+  band); BR exploitability positive (4.73 ≥ 0); bot still crushes
+  random/call-station/maniac by wide significant margins.
+- Primary metric: **neither** improved. `nlhe_exploitability_bb100` rose by 1.44
+  bb/100 (wrong direction); `win_vs_tight_aggressive` fell by 24.15 bb/100.
+- Regression: `win_vs_tight_aggressive` dropped 24.15 bb/100, ≈1.7× its own 95%
+  CI half-width — a statistically significant regression against the one
+  sophisticated baseline.
+
+**Why:** at a *fixed* 120k-deal training budget, the half-pot size blew the
+abstraction up 10.7× (5,772 → 61,802 info sets), so each info set received
+roughly one-tenth the MCCFR visits. The bot is badly under-trained on the larger
+tree — more exploitable, and much weaker against TAG, which punishes imprecise
+play. Confirms the backlog's own caveat ("bigger tree, slower training; check
+it's a net win"). A richer bet menu would likely need a proportionally larger
+training budget (and/or external-sampling MCCFR) to pay off.
+
+**Verdict: REGRESSION.** Reverted the code change (`bet_sizes` back to `(1.0,)`);
+kept the baseline bot. `EVALUATION.md` and `figures/` are unchanged (bot
+unchanged). Appended the baseline metrics as today's history row so the trail
+stays continuous.
+
+---
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
