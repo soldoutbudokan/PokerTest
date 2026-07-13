@@ -13,6 +13,70 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-13 — train the NLHE bot 3× longer (120k → 360k MCCFR deals)
+
+**Idea:** at `level=standard` the bot trains 120,000 chance-sampled MCCFR
+deals over 5,772 information sets — only ~20 visits/infoset on average, so the
+strategy is clearly pre-asymptotic (under-trained). More training is the one
+lever with *no* under-convergence regression risk (unlike a richer abstraction
+or extra bet size, which enlarge the tree and thin the same budget), and it
+targets the primary metric (exploitability) directly. Raised the bot's training
+count in `metrics.py:LEVELS` from 120k → 360k at `standard` (and full 250k →
+600k to keep the level hierarchy monotonic). Nothing else changed: same
+abstraction (169 preflop + 8 draw-aware post-flop buckets), same eval budget,
+same seed, same best-response budget (`expl_max=150k`).
+
+**Hypothesis:** a better-converged bot sits closer to the abstract Nash
+equilibrium, so its best-response exploitability lower bound should fall and win
+rates should hold or improve.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline (120k) | Candidate (360k) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | **-6.838** | -10.13 — **went negative** |
+| `nlhe_infosets` | 5,772 | 5,772 | 0 (tree/abstraction unchanged) |
+| `win_vs_random` | +63.71 (±16.47) | +71.34 | +7.63 (within CI) |
+| `win_vs_call_station` | +111.05 (±17.58) | +109.95 | -1.10 (within CI) |
+| `win_vs_maniac` | +65.28 (±18.80) | +67.70 | +2.43 (within CI) |
+| `win_vs_tight_aggressive` | **+8.37** (±13.90) | **-11.62** (±13.13) | **-19.98 — beyond CI (two-sample z≈2.05)** |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched solver) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (push/fold trainer budget untouched) |
+
+Baseline BR curve: `[[10000,-28.87],[25000,-17.97],[50000,-8.81],[100000,-0.99],[150000,3.29]]`.
+Candidate BR curve: `[[10000,-35.93],[25000,-26.63],[50000,-18.38],[100000,-11.11],[150000,-6.84]]` — **negative across the whole 150k range.**
+
+**Gate check:**
+- `pytest -q` (via `python -m pytest -q`) green: 31 passed.
+- Invariants: Kuhn/Leduc untouched and unchanged; bot still crushes
+  random/call-station/maniac by a wide significant margin. **BUT invariant #5
+  is broken:** the best response must be ≥ ~0 bb/100 — the candidate's BR is
+  **-6.84** and negative across the entire curve. Per DEPENDENCIES.md this means
+  the *exploiter is under-trained relative to the now-stronger bot*, not that the
+  bot is unexploitable. The exploiter budget (`expl_max=150k`) was held fixed
+  while the bot trained 3× longer, so the measurement is no longer valid — the
+  "improved" exploitability is an artifact, not a real gain.
+- Primary metric: exploitability "improved" only via a broken measurement (not
+  admissible); `win_vs_tight_aggressive` moved the **wrong** way.
+- Regression: `win_vs_tight_aggressive` dropped **-19.98 bb/100**, larger than
+  its 95% CI (±13.90) — a significant regression. The earlier, less-converged
+  bot happened to exploit TAG's leaks harder; pushing toward abstract Nash
+  (which is not the max-exploit strategy vs a fixed weak opponent) gave that up.
+
+**Verdict: REGRESSION.** Reverted the `LEVELS` change (`git checkout --
+pokerbot/metrics.py`); the shipped bot stays at 120k. Appended today's row
+(the unchanged baseline bot's numbers) to `metrics_history.csv` and this entry.
+Did **not** regenerate `EVALUATION.md`/`figures/` (bot unchanged).
+
+**Follow-up for a future run:** "train longer" is only measurable if the
+best-response exploiter budget scales *with* the bot — a fixed 150k BR can't
+exploit a 360k-trained bot and the metric silently goes negative. A valid
+version of this experiment must raise `expl_max` alongside `train_iters`. And
+even with a valid exploitability read, the TAG regression would need to clear
+its CI before this is shippable.
+
+---
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
