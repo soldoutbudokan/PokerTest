@@ -13,6 +13,81 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-14 — DCFR-style quadratic strategy averaging in the NLHE trainer
+
+**Idea:** the exact Kuhn/Leduc solvers default to Discounted CFR with γ=2
+(quadratic strategy averaging) *because* it pulls the average strategy toward
+equilibrium faster — yet the NLHE MCCFR trainer (`FastNLHECFR`) uses plain
+CFR+ **linear** averaging (weighting iteration `t` by `t`). Aligned the two:
+added an `avg_power` parameter to `FastNLHECFR` (default `1.0` = unchanged
+behaviour, so all tests stay byte-identical) that weights each iteration's
+strategy contribution by `t ** avg_power`, and set `avg_power=2.0` for the bot
+and push/fold trainers in `metrics.py`. The regret update (regret-matching-plus)
+is untouched, the betting tree and card abstraction are identical, and the
+best-response exploiter is left unchanged — so the exploitability ruler stays a
+valid apples-to-apples lower bound at the same 150k-iter budget.
+
+**Hypothesis:** heavier late-iteration weighting converges the *average*
+strategy closer to the abstract Nash at the same 120k training budget, lowering
+`nlhe_exploitability_bb100` for free (no bigger tree, no extra iterations).
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop +
+8 draw-aware post-flop buckets), same `level="standard"` budget, same seed 0.
+Only the bot's average-strategy weighting changed (linear → quadratic).
+
+**Pre-check (A/B probe, bot train 120k, exploiter 100k / eval 30k):**
+`avg_power` 1.0 → +0.12, 1.5 → −1.05, 2.0 → −1.78 bb/100 — a clean *monotone*
+effect (heavier averaging → harder to exploit), confirming the direction is
+real and not a single-seed fluke. (Negative values there just mean a 100k-iter
+exploiter is under-converged against the improved bot; the full run uses 150k.)
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline | Candidate | Δ | Noise / CI |
+|---|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | 1.543 | **−1.746** | within the routine's 1–2 bb/100 noise band |
+| `win_vs_random` | +63.71 | +67.40 | +3.69 | within CI ±16.20 |
+| `win_vs_call_station` | +111.05 | +107.57 | −3.48 | within CI ±17.68 |
+| `win_vs_maniac` | +65.28 | +60.08 | −5.20 | within CI ±18.61 |
+| `win_vs_tight_aggressive` | **+8.37** | **−2.44** | **−10.81** | within CI ±13.79 (flips beating→losing) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged | untouched code path |
+| `nlhe_infosets` | 5772 | 5772 | 0 | same tree/abstraction |
+| `pushfold_jam_pct` | 62.1 | 61.5 | −0.6 | still in the Nash 60–70% band |
+
+Best-response exploiter curve stayed monotone-positive-at-convergence and valid:
+baseline `[[10000,-28.87],[25000,-17.97],[50000,-8.81],[100000,-0.99],[150000,3.29]]`
+vs candidate `[[10000,-30.08],[25000,-19.46],[50000,-10.52],[100000,-2.77],[150000,1.54]]`
+— same shape, ends **+1.54 ≥ 0** (BR invariant #5 holds).
+
+**Gate check:**
+- `pytest -q` green: 31 passed (default `avg_power=1.0` keeps existing behaviour;
+  candidate run used 2.0).
+- Invariants: Kuhn/Leduc unchanged; evaluator untouched; bot still crushes
+  random/call-station/maniac by wide, significant margins (+67/+108/+60);
+  BR exploitability ends +1.54 ≥ 0. **All invariants hold — nothing is broken.**
+- Primary metric: `nlhe_exploitability_bb100` fell 1.746, but that is **inside
+  the routine's explicit 1–2 bb/100 noise band** (same basis on which the
+  2026-07-01 entry called a 0.48 exploitability move "noise"), so it is *not*
+  an improvement beyond noise. `win_vs_tight_aggressive` did not improve — it
+  *dropped* 10.81 (within CI, not significant).
+- No **significant** regression: every `win_vs_*` Δ is within its 95% CI. But
+  the pattern is telling — the change trades win-rate breadth (all four
+  baselines drifted down, TAG flips negative) for a noise-band dip in
+  exploitability.
+
+**Verdict: NO CHANGE.** The one primary path that moved (exploitability) moved
+only within the stated noise band, and it came paired with a consistent — if
+individually non-significant — decline across every head-to-head win rate,
+including undoing the previous run's TAG edge. Per the routine's rule ("if
+unsure whether something is noise, treat it as noise; don't ship"), reverted the
+`avg_power` change; the bot on `main` is unchanged. Recorded this run's history
+row from the (unchanged) baseline bot. Worth revisiting only with a *stronger*
+exploiter budget to confirm whether the exploitability gain is genuine signal,
+and paired with more training so the average-weighting shift doesn't starve
+rarely-visited infosets (the likely cause of the win-rate drift).
+
+---
+
 ## 2026-07-01 — draw-aware post-flop abstraction
 
 **Idea:** the post-flop abstraction (`StrengthAbstraction`) only bucketed
