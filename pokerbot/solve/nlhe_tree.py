@@ -177,7 +177,9 @@ class FastNLHECFR:
 def matchup_value(game: NLHEGame, strat0: TabularStrategy,
                   strat1: TabularStrategy, num_deals: int,
                   rng: Optional[random.Random] = None,
-                  tree: Optional[CompiledBettingTree] = None):
+                  tree: Optional[CompiledBettingTree] = None,
+                  search=None, search_seats: Tuple[int, ...] = (),
+                  deal_fn=None):
     """Expected bb/hand to player 0 when seat 0 plays ``strat0``, seat 1
     ``strat1``.
 
@@ -185,6 +187,12 @@ def matchup_value(game: NLHEGame, strat0: TabularStrategy,
     cards are sampled), so this has far lower variance than playing out sampled
     hands — ideal for measuring small edges like exploitability.  Returns
     ``(mean_bb_per_hand, stderr_bb_per_hand)``.
+
+    ``search``/``search_seats`` optionally override a seat's *river* strategy
+    with a real-time re-solve (see :mod:`pokerbot.solve.subgame`); with the
+    defaults (``search=None``) the code path is identical to the blueprint one.
+    ``deal_fn`` optionally replaces ``game.deal`` (e.g. to draw boards from a
+    fixed pool so subgame solves cache).
     """
     import math
     rng = rng or random.Random()
@@ -211,6 +219,11 @@ def matchup_value(game: NLHEGame, strat0: TabularStrategy,
         actions = tree.dec_actions[nid]
         key = f"{bucket}|{tree.dec_hist[nid]}"
         probs = (strat0 if player == 0 else strat1).action_probs(key, actions)
+        if search is not None and player in search_seats and street == RIVER:
+            sp = search.river_action_probs(board, tree.dec_hist[nid],
+                                           hole[player], player, actions)
+            if sp is not None:
+                probs = sp
         v = 0.0
         for i, ci in enumerate(tree.dec_children[nid]):
             p = probs.get(actions[i], 0.0)
@@ -221,7 +234,7 @@ def matchup_value(game: NLHEGame, strat0: TabularStrategy,
     total = 0.0
     sq = 0.0
     for _ in range(num_deals):
-        hole, board = game.deal(rng)
+        hole, board = deal_fn(rng) if deal_fn is not None else game.deal(rng)
         x = ev(tree.root, hole, board, {}, [None])
         total += x
         sq += x * x
@@ -237,18 +250,24 @@ class FastExploiterCFR:
     """Best response to a fixed strategy over the compiled betting tree."""
 
     def __init__(self, game: NLHEGame, fixed: TabularStrategy, exploiter: int,
-                 tree: Optional[CompiledBettingTree] = None):
+                 tree: Optional[CompiledBettingTree] = None,
+                 search=None, deal_fn=None):
         self.game = game
         self.fixed = fixed
         self.exploiter = exploiter
         self.tree = tree or CompiledBettingTree.build(game)
         self.nodes: Dict[Tuple[int, object], _Node] = {}
         self.iterations = 0
+        # Optional real-time re-solve for the *fixed* (exploited) player's river
+        # nodes, and an optional fixed-board-pool deal fn so solves cache.  With
+        # the defaults this class behaves exactly as the blueprint exploiter.
+        self.search = search
+        self.deal_fn = deal_fn
 
     def run(self, iterations: int, rng: Optional[random.Random] = None) -> None:
         rng = rng or random.Random()
         ab = self.game.abstraction
-        deal = self.game.deal
+        deal = self.deal_fn or self.game.deal
         root = self.tree.root
         for _ in range(iterations):
             self.iterations += 1
@@ -284,6 +303,11 @@ class FastExploiterCFR:
         if player != self.exploiter:
             key = f"{bucket}|{tree.dec_hist[nid]}"
             probs = self.fixed.action_probs(key, actions)
+            if self.search is not None and street == RIVER:
+                sp = self.search.river_action_probs(board, tree.dec_hist[nid],
+                                                    hole[player], player, actions)
+                if sp is not None:
+                    probs = sp
             value = 0.0
             for i in range(len(children)):
                 p = probs.get(actions[i], 0.0)

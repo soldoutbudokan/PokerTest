@@ -156,6 +156,14 @@ def fig_progress(ax, history_path: str) -> bool:
     tag = [float(r["win_vs_tight_aggressive"] or 0) for r in rows]
     ax.plot(x, expl, "o-", color=RED, label="exploitability (bb/100)")
     ax.plot(x, tag, "s-", color=GREEN, label="win vs TAG (bb/100)")
+    # Blueprint+search exploitability is only present on search runs; plot the
+    # points that have it (a separate, non-comparable series from the blueprint
+    # exploitability, measured on the search pool/budget).
+    sx = [i for i, r in enumerate(rows)
+          if r.get("nlhe_exploitability_search_bb100") not in (None, "")]
+    if sx:
+        sy = [float(rows[i]["nlhe_exploitability_search_bb100"]) for i in sx]
+        ax.plot(sx, sy, "^-", color=BLUE, label="exploitability+search (bb/100)")
     ax.set_xticks(x)
     ax.set_xticklabels([r["date"] for r in rows], rotation=45, fontsize=7, ha="right")
     ax.axhline(0, color="black", lw=0.6, alpha=0.4)

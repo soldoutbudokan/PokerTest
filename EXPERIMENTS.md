@@ -8,8 +8,104 @@ REGRESSION).
 Metrics legend (all from `pokerbot.metrics.flatten`):
 - `kuhn_exploitability`, `leduc_exploitability` — solver sanity (must stay low).
 - `nlhe_exploitability_bb100` — best-response lower bound (lower = better).
+- `nlhe_exploitability_search_bb100` — same, for the **blueprint+search** bot,
+  measured on the search board pool (blank on blueprint-only runs).
 - `win_vs_*` — bot win rate vs each baseline, bb/100 (higher = better).
 - `pushfold_jam_pct` — 10 BB SB jam range (Nash ≈ 60–70%).
+
+---
+
+## 2026-07-15 — real-time river subgame search (endgame re-solving)
+
+**Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop
+card abstraction, and that abstraction error dominates its exploitability.
+Add **real-time river subgame re-solving** (Libratus/Pluribus blueprint→search):
+when play reaches the river, re-solve the current subgame at exact-strength
+(near-unabstracted) granularity from the opponent's — and the hero's own —
+river range implied by the blueprint. New: `pokerbot/solve/subgame.py`
+(`RiverSubgameSolver`), `pokerbot/agents/search.py` (`SearchAgent`), plus
+optional `search=`/`deal_fn=` hooks on `FastExploiterCFR`/`matchup_value` that
+are inert when `search=None` (so the blueprint path is byte-for-byte unchanged).
+
+**How it works.**
+- *Subgame:* the river betting subtree is card-independent and already in the
+  compiled tree (only 25 distinct river roots, each ≤21 terminals). Only
+  showdowns depend on cards, and those use the exact evaluator.
+- *Range:* for each hand, the blueprint reach to the river root is the product
+  of the blueprint action probabilities along the public path (per that hand's
+  bucket); normalised → the conditional range. Solved as a range-vs-range
+  endgame with vector CFR+.
+- *Granularity:* hands are merged into **exact showdown-strength classes**
+  (lossless for river ordering, far finer than 8 buckets). This ignores
+  card-removal / blocker effects — a documented second-order approximation that
+  keeps solves fast (showdowns become one `cumsum`).
+- *Determinism:* the re-solve is a **full enumeration** (no Monte-Carlo inside),
+  a pure function of `(board, river_root, blueprint)`; the only RNG is the
+  existing seeded deal/action sampling. Solves are cached per `(board, root)`,
+  with a per-board strength/bucket cache shared across roots.
+- *Fallback:* on the river, search **replaces** the blueprint's uniform-random
+  off-strategy fallback with a real re-solve for the exact hand.
+
+**Setup:** identical blueprint (heads-up 20 BB, pot+all-in, 169 pre-flop + 8
+post-flop buckets, MCCFR 120k, seed 0 — byte-identical to the 2026-07-01 bot).
+New `SEARCH_LEVELS["standard"]`: fixed pool of **64 boards** (so subgame solves
+cache), best-response exploiter **150k iters/seat**, 8k eval hands, 200 solver
+iterations, 500 arena pairs. Blueprint and search are measured on the **same
+pool, iterations and seeds**, so the delta isolates search's effect.
+
+**Result** (`_search_metrics`, standard search level, seed 0):
+
+| Bot | In-abstraction exploitability (bb/100, pool) |
+|---|---|
+| blueprint | **+2.615** |
+| blueprint + river search | **+0.729** |
+| **Δ** | **−1.886** (search *lowers* exploitability ~72%) |
+
+The pool blueprint number (+2.615) tracks the canonical full-random blueprint
+exploitability (+2.8–3.3), a sanity check that the pool measurement is sound;
+both are positive (BR invariant holds). The −1.886 bb/100 drop is well beyond
+the routine's 1–2 bb/100 noise band. Search bot win-rates vs baselines (full
+random deals, 500 pairs): random **+90.0**, call-station **+137.8**, maniac
+**+87.9**, tight-aggressive **+31.4** (all significant except TAG) — the bot
+still crushes the panel. **2197** distinct subgame solves, **~21 min** wall-clock
+for the search eval.
+
+A preliminary run at 80k exploiter iters (under-converged, both numbers
+negative) gave Δ = −1.4; converging the BR to 150k (both numbers positive)
+widened it to −1.9 — as expected, a stronger best response exploits the
+blueprint's river seams more, and search closes them.
+
+**Gate check:**
+- `python -m pytest -q` green: **39 passed** (8 new in `tests/test_subgame.py`:
+  subgame convergence, nut-never-folds, determinism/caching, search-off ==
+  blueprint, `search=None` matchup unchanged, beats call-station, and a
+  search-not-worse-than-blueprint exploitability check).
+- Invariants: Kuhn/Leduc untouched; bot still crushes random/call-station/maniac
+  significantly; best-response exploitability ends **positive** (blueprint
+  +2.615, search +0.729). New invariants 6 (search off ⇒ exact reproduction) and
+  7 (search must not raise exploitability) both hold.
+- Primary metric: search lowers in-abstraction exploitability from +2.615 to
+  +0.729 bb/100 (−1.886, > noise) on the same pool/seeds — a real, paired win.
+
+**Caveats / honest limits (drive the next sessions):**
+- The exploiter is itself **in-abstraction** (8-bucket best response), so it
+  cannot fully punish the finer blueprint↔re-solve seam. The −1.9 is a *lower
+  bound* on search's benefit against a bucketed adversary; a finer/unabstracted
+  exploiter is needed to stress the seam (and to certify safety).
+- River re-solving is **unsafe/unnested** here — it did not raise exploitability
+  in this measurement, but the range-constrained safe gadget (step 2) is the
+  principled guarantee.
+- River reach is only ~2.6% of blueprint self-play hands (20 BB → pre-flop-jam
+  heavy), which caps how much *river-only* search can move the aggregate; the
+  ~1.9 bb/100 it delivers is on that thin slice. Depth-limited turn/flop search
+  (step 3) is where the larger gains are.
+- Strength-merging ignores blockers; blocker-aware solves are future work.
+
+**Verdict: IMPROVEMENT.** River search lowers exploitability by ~1.9 bb/100
+(paired, converged) with no regression and all baselines still crushed. Kept as
+an additive, off-by-default capability (`SearchAgent`); the daily routine resumes
+against this baseline (see the search-aware section of
+`routines/daily_improvement.md`).
 
 ---
 

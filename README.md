@@ -17,7 +17,8 @@ comparison to published theory.
 | Extensive-form games | `pokerbot/games/` | Kuhn, Leduc, and heads-up No-Limit Hold'em behind one interface. |
 | Solvers | `pokerbot/solve/cfr.py`, `tree.py` | Vanilla CFR, CFR+, **Discounted CFR**; exact best-response / exploitability. |
 | Monte-Carlo CFR | `pokerbot/solve/mccfr.py`, `nlhe_tree.py` | Chance-sampling MCCFR for NLHE over a compiled betting tree (fast). |
-| Agents | `pokerbot/agents/` | The trained bot plus a panel of baselines. |
+| Real-time search | `pokerbot/solve/subgame.py` | River **subgame re-solving** (endgame search): re-solves the last street at exact-strength granularity from the blueprint-implied range. |
+| Agents | `pokerbot/agents/` | The trained bot (`StrategyAgent`), the search bot (`SearchAgent`), plus a panel of baselines. |
 | Evaluation | `pokerbot/eval/` | Mirrored-deal arena (mbb/100 + 95% CIs), best-response exploitability. |
 | Metrics | `pokerbot/metrics.py` | Single source of truth for all objective numbers. |
 | Report | `pokerbot/evaluate.py` | Runs every objective check and writes `EVALUATION.md`. |
@@ -99,5 +100,16 @@ figure, and the report all change).
 - The betting tree's *structure* is card-independent, so it is **compiled once**
   and each Monte-Carlo deal only plugs in the showdown winner and the card
   buckets — about a 20× speedup over walking game objects.
+- **Real-time river search** (`SearchAgent`) re-solves the current river subgame
+  at exact-strength (near-unabstracted) granularity, using the opponent's — and
+  its own — river range implied by the blueprint. This partially undoes the
+  coarse post-flop abstraction where it matters most (the river, no draws left),
+  the Libratus/Pluribus blueprint→blueprint+search idea, and stays inside the
+  provable game-theoretic framework. It is **off by default** and fully additive:
+  with search disabled every existing number reproduces exactly. On the river it
+  also **replaces the blueprint's uniform-random fallback** on unseen info sets
+  with a real re-solve. The current version is *unsafe* (unnested) re-solving;
+  exploitability is measured after enabling it (`nlhe_exploitability_search_bb100`)
+  and safe/nested re-solving is the next step. See `EXPERIMENTS.md`.
 
 See `EVALUATION.md` for the latest numbers.

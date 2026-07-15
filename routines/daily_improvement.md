@@ -167,6 +167,38 @@ Then:
 
 End your turn with a 3–5 line summary: idea, before→after numbers, verdict.
 
+## Search-aware runs (river subgame re-solving)
+
+The bot can now optionally re-solve the **river** subgame at decision time
+(`SearchAgent` + `pokerbot/solve/subgame.py`). This breaks a few of this
+routine's default assumptions, so treat it specially:
+
+- **It is a separate metric, not a redefinition.** `nlhe_exploitability_bb100`
+  still means the *blueprint's* exploitability (full random boards) — leave it
+  alone so every past `metrics_history.csv` row stays comparable. Search results
+  live in a **new** column, `nlhe_exploitability_search_bb100`, which is blank on
+  blueprint-only runs.
+- **Search is off by default.** `compute_metrics(level=...)` with no `search`
+  flag reproduces today's numbers exactly (invariant 6 in `DEPENDENCIES.md`). A
+  normal daily run is unaffected — do nothing.
+- **To evaluate search**, run `compute_metrics(level=..., search=True,
+  search_level=...)`. This measures the blueprint and the search bot on the
+  **same fixed board pool, iterations and seeds** (`SEARCH_LEVELS`), so the delta
+  `metrics["nlhe"]["search"]["delta_bb100"]` isolates search's effect. The
+  routine's "same level for baseline and candidate" rule extends to "same
+  `search_level`, same pool." Use `search_level="quick"` only to smoke-test code;
+  do the real comparison at `"standard"`.
+- **The search gate adds invariant 7:** enabling search must not *raise*
+  exploitability vs the blueprint beyond noise (the unsafe-solving guard). If it
+  does, that's a regression — don't ship it; the fix is safe/nested re-solving.
+- **This is multi-session work.** Landing search (the solver, safety, deeper
+  streets) doesn't fit "one small reversible change per run." Do that build in
+  interactive sessions; once it's landed and the search baseline is recorded, the
+  daily routine resumes as normal against the new baseline. Backlog for those
+  sessions: safe (range-constrained) re-solving; depth-limited turn/flop search;
+  blocker-aware (card-removal) river solves; a finer (unabstracted) exploiter to
+  stress the blueprint↔re-solve seam.
+
 ## Budget + safety
 
 - One idea per run. Don't sprawl. If training/eval would take too long, drop to a

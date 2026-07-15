@@ -45,7 +45,8 @@ once.
 | Games | `games/base.py`, `kuhn.py`, `leduc.py`, `nlhe.py`, `nlhe_abstraction.py` | cards, evaluator | Rules + the card **abstraction**. |
 | Exact solvers | `solve/cfr.py`, `solve/tree.py`, `solve/exploitability.py` | games | CFR/DCFR + exact exploitability (Kuhn/Leduc). |
 | MCCFR | `solve/mccfr.py`, `solve/nlhe_tree.py` | nlhe, abstraction, evaluator | Trains the NLHE bot; best-response exploiter; `matchup_value`. |
-| Agents | `agents/base.py`, `agents/baselines.py` | games, solvers | The bot wraps a `TabularStrategy`; baselines are heuristics. |
+| Search | `solve/subgame.py` | nlhe_tree, evaluator | Real-time **river** subgame re-solver (endgame search); deterministic, cached. |
+| Agents | `agents/base.py`, `agents/baselines.py`, `agents/search.py` | games, solvers | The bot wraps a `TabularStrategy`; `SearchAgent` adds river re-solving; baselines are heuristics. |
 | Eval | `eval/arena.py`, `eval/exploit.py` | agents, nlhe_tree | Win rate (mirrored CIs) + exploitability. |
 | Metrics | `metrics.py` | everything above | Computes the full metrics dict + history row. |
 | Outputs | `evaluate.py`, `visualize.py` | metrics (+ lower layers) | `EVALUATION.md`, `figures/*.png`. |
@@ -61,6 +62,8 @@ once.
 | **The evaluator** (`evaluator.py`) | Everything that scores showdowns. `tests/test_evaluator.py` (exhaustive frequency counts) must pass — if it fails, stop. |
 | **The bot** (more training / new strategy) | `eval/*`, `metrics.py`, all `figures/*.png`, `EVALUATION.md`, and a new row in `metrics_history.csv`. Win rates and exploitability should not regress. |
 | **`metrics.py`** (add/rename a metric) | Update `flatten()` + `HISTORY_COLUMNS` (or `metrics_history.csv` breaks), `visualize.py` (to plot it), and `evaluate.py` (to report it). |
+| **The river search solver** (`solve/subgame.py`) or **`SearchAgent`** (`agents/search.py`) | Only the *search* numbers move: `nlhe.search`, the `nlhe_exploitability_search_bb100` column, section 4d of the report, the search series in `figures/progress.png`. The blueprint path (`StrengthAbstraction`/`FastNLHECFR`/existing metrics) is untouched **iff** you don't change the shared solvers' default (`search=None`) behaviour. Determinism: the re-solve must stay a pure function of `(board, river_root, blueprint)` — no unseeded RNG. |
+| **`SEARCH_LEVELS`** (search eval budget) | The search exploitability magnitude and its wall-clock. Keep the baseline (blueprint) and candidate (search) on the **same** pool/iters/seeds, or the delta is meaningless. |
 | **`visualize.py`** | Only `figures/*.png`. Safe; no other code depends on it. |
 | **`metrics_history.csv` columns** | `visualize.py:fig_progress` and `metrics.py:HISTORY_COLUMNS` must agree. Append-only — don't rewrite past rows. |
 | **The arena / CIs** (`eval/arena.py`) | Reported win rates and their significance everywhere. Keep the mirrored-deal design (it's the variance reduction). |
@@ -84,5 +87,27 @@ python -m pokerbot.visualize --level standard   # writes figures/
 4. The bot beats `random`, `call-station`, `maniac` by a wide, significant margin.
 5. A best response to the bot must be ≥ ~0 bb/100 (a negative number means the
    exploiter is under-trained or the measurement is wrong — never ship on it).
+6. **Search off ⇒ nothing moves.** With river search disabled (`search=False`,
+   the default), every existing number reproduces *exactly*. The search hooks on
+   `FastExploiterCFR`/`matchup_value` and `SearchAgent` all default to the plain
+   blueprint path — `tests/test_subgame.py` pins this (search-off agent decisions
+   and `search=None` matchup values are bit-identical to the blueprint).
+7. **Search must not raise exploitability (unsafe-solving guard).** Enabling
+   river search must not increase best-response exploitability vs the blueprint
+   beyond noise, measured on the *same* board pool / budget / seeds
+   (`nlhe_exploitability_search_bb100` vs the blueprint's pool exploitability).
+   River re-solving is currently *unsafe* (unnested): it can in principle raise
+   exploitability by letting the opponent exploit the blueprint↔re-solve seam.
+   A rise beyond noise is a regression — the fix is safe/nested re-solving
+   (range-constrained gadget), not shipping the unsafe version.
 
 If a change breaks any of these, it is a regression, not an improvement.
+
+## River search and the off-blueprint fallback
+
+A plain `StrategyAgent` plays **uniform random** on any info-set key it never
+trained (`TabularStrategy.action_probs` fallback). `SearchAgent` **replaces that
+fallback on the river**: instead of guessing uniformly at an unseen river key, it
+re-solves the subgame for its exact hand. Off the river it still defers to the
+blueprint (and the uniform fallback). This is additive and gated: `SearchAgent`
+with `enabled=False`, and `search=None` on the solvers, are the blueprint path.

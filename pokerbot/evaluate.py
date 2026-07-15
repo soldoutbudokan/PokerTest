@@ -36,7 +36,7 @@ from .solve.cfr import CFRSolver
 from .solve.exploitability import expected_value
 from .solve.exploitability import exploitability as obj_exploitability
 from .solve.mccfr import ChanceSampledCFR
-from .solve.nlhe_tree import FastNLHECFR
+from .solve.nlhe_tree import CompiledBettingTree, FastNLHECFR
 from .solve.tree import GameTree, TreeCFR
 from .solve.tree import exploitability as tree_exploitability
 
@@ -145,15 +145,17 @@ def _hand_name(idx: int) -> str:
 
 
 def section_nlhe(rep: Report, train_iters: int, eval_pairs: int,
-                 expl_train: int, expl_eval: int, pf_iters: int) -> None:
+                 expl_train: int, expl_eval: int, pf_iters: int,
+                 search_params=None) -> None:
     rep.add("## 4. No-Limit Hold'em bot")
     rep.add()
     cfg = NLHEConfig(stack=20.0, bet_sizes=(1.0,), max_raises_per_street=3)
     ab = StrengthAbstraction(postflop_buckets=8)
     g = NLHEGame(cfg, ab)
+    tree = CompiledBettingTree.build(g)
     rng = random.Random(0)
     t0 = time.time()
-    trainer = FastNLHECFR(g)
+    trainer = FastNLHECFR(g, tree)
     trainer.run(train_iters, rng)
     bot = trainer.average_strategy()
     rep.add(f"**Setup**: heads-up, 20 BB effective, pot-sized bets + all-in, "
@@ -218,12 +220,40 @@ def section_nlhe(rep: Report, train_iters: int, eval_pairs: int,
             f"folds — qualitatively matching the known push/fold equilibrium.")
     rep.add()
 
+    if search_params is not None:
+        from .metrics import _search_metrics
+        rep.add("### 4d. River subgame search (endgame re-solving)")
+        rep.add()
+        sm = _search_metrics(g, tree, bot, 0, search_params)
+        rep.add(f"The bot re-solves the river subgame at exact-strength "
+                f"granularity using the blueprint-implied range. Measured on a "
+                f"fixed pool of **{sm['pool_size']} boards** (so subgame solves "
+                f"cache), best-response exploitability (both seats, same "
+                f"pool/seeds):")
+        rep.add()
+        rep.add("| Bot | In-abstraction exploitability (bb/100) |")
+        rep.add("|---|---|")
+        rep.add(f"| blueprint | {sm['blueprint_pool_bb100']:+.2f} |")
+        rep.add(f"| blueprint + river search | {sm['search_pool_bb100']:+.2f} |")
+        rep.add()
+        rep.add(f"**Δ = {sm['delta_bb100']:+.2f} bb/100** "
+                f"({'search lowers exploitability' if sm['delta_bb100'] < 0 else 'no improvement / search raises it'}). "
+                f"{sm['solves']} distinct subgame solves, {sm['seconds']:.0f}s. "
+                f"Search win-rate vs baselines: "
+                + ", ".join(f"{n} {b['bb100']:+.0f}"
+                            for n, b in sm['baselines'].items()) + " bb/100.")
+        rep.add()
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="fast, lower-iteration pass")
     ap.add_argument("--full", action="store_true", help="high-iteration report")
     ap.add_argument("--out", default=None, help="write report to this markdown file")
+    ap.add_argument("--search", action="store_true",
+                    help="also evaluate river subgame search (adds section 4d)")
+    ap.add_argument("--search-level", default="standard",
+                    choices=["quick", "standard"])
     args = ap.parse_args()
 
     if args.full:
@@ -246,8 +276,12 @@ def main() -> None:
     section_evaluator(rep)
     section_kuhn(rep, p["kuhn"])
     section_leduc(rep, p["leduc"])
+    search_params = None
+    if args.search:
+        from .metrics import SEARCH_LEVELS
+        search_params = SEARCH_LEVELS[args.search_level]
     section_nlhe(rep, p["train"], p["eval_pairs"], p["expl_train"],
-                 p["expl_eval"], p["pf"])
+                 p["expl_eval"], p["pf"], search_params=search_params)
     rep.add(f"_Total evaluation time: {time.time() - t0:.0f}s._")
     if args.out:
         rep.write(args.out)
