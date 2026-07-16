@@ -15,6 +15,70 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-16 — finer post-flop card abstraction (8 → 12 strength buckets)
+
+**Idea:** the post-flop card abstraction bins made-hand strength into 8
+equal-probability buckets per street (split further by the draw feature on
+flop/turn). 8 buckets is coarse — hands of quite different strength share a
+bucket and therefore a strategy. Raise the resolution to **12 buckets**
+(`StrengthAbstraction(postflop_buckets=12)` in `metrics.py`/`evaluate.py`) so the
+bot can separate, e.g., a marginal made hand from a strong one it currently
+lumps together. The betting tree is card-independent, so this changes only the
+information-set *keys*, not the tree — per-deal training cost is unchanged; only
+the number of info sets (and hence how well each is trained at a fixed budget)
+moves.
+
+**Hypothesis:** finer strength resolution lets the bot make better value/bluff
+and pot-control decisions, especially against the thinking opponent
+(tight-aggressive), mirroring the 2026-07-01 draw-aware win — at the cost of more
+info sets to train.
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop
+buckets, draw-aware flop/turn split), same `level="standard"` MCCFR
+training/eval budget (120k train, 150k BR exploiter, seed 0). Only
+`postflop_buckets` changed 8 → 12. Baseline reproduced the committed 2026-07-01
+numbers exactly before the edit (determinism confirmed).
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline (8) | Candidate (12) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | 3.227 | −0.062 (noise; not a beyond-noise drop) |
+| `nlhe_infosets` | 5,772 | 7,644 | +1,872 (+32%, expected — finer abstraction) |
+| `win_vs_random` | +63.71 (±16.47) | +71.03 (±16.47) | +7.32 (z=+0.61, within CI) |
+| `win_vs_call_station` | +111.05 (±17.58) | +101.01 (±17.66) | −10.04 (z=−0.79, within CI) |
+| `win_vs_maniac` | +65.28 (±18.80) | +57.97 (±18.83) | −7.31 (z=−0.54, within CI) |
+| `win_vs_tight_aggressive` | **+8.37** (±13.90) | **−5.08** (±14.06) | **−13.45** (z=−1.33) — TAG moved the *wrong* way |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched path) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (pre-flop only) |
+
+Best-response exploitability stayed positive at convergence (candidate curve
+`[-29.64, -18.44, -9.04, -1.27, +3.23]`; BR invariant holds).
+
+**Gate check:**
+- `python -m pytest -q` green: **39 passed** (no test hardcodes the metrics
+  bucket count; `test_subgame.py` builds its own 8-bucket game).
+- Invariants: Kuhn/Leduc unchanged; bot still crushes
+  random/call-station/maniac by a wide, significant margin; BR exploitability
+  ends positive (+3.23). All hold.
+- **Primary metric FAILS both ways:** exploitability is essentially flat
+  (−0.062 bb/100, inside the 1–2 bb/100 noise band), and
+  `win_vs_tight_aggressive` did not rise — it *fell* 13.45 bb/100 (z=−1.33).
+- Regression: no category crosses its 95% CI (no *significant* regression), but
+  3 of 4 win-rate categories dropped and the primary metric did not improve.
+  The extra 32% info sets just fragment the abstraction, leaving each bucket
+  less-trained at the fixed 120k budget — no net benefit.
+
+**Verdict: NO CHANGE (mild regression).** Reverted the code
+(`postflop_buckets` back to 8); appended the history row (unchanged-bot metrics)
+and this entry so the trail stays continuous. Finer strength buckets are not a
+free win at this training budget — a future retry would need to pair the finer
+abstraction with a larger training budget (so each bucket still converges), or
+spend the resolution where it pays (potential-aware/equity buckets, item 8)
+rather than uniformly.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop
