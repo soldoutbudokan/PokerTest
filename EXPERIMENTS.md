@@ -15,6 +15,83 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-17 — train the blueprint longer (120k → 300k MCCFR deals)
+
+**Idea:** backlog item 1. The blueprint is a chance-sampling MCCFR (CFR+) average
+strategy trained for 120k deals. MCCFR converges ~O(1/√T), so more deals should
+move the bot closer to the abstract Nash equilibrium and *lower* its
+in-abstraction exploitability — without touching the card/action abstraction
+(same 5,772 info sets, no new blast radius). Change was a one-line bump of the
+`standard` (and `full`) `nlhe_train` budget in `metrics.py:LEVELS`; everything
+else — abstraction, seeds, evaluation budget — identical.
+
+**Hypothesis:** at a fixed evaluation budget, a longer-trained blueprint is a
+strictly more converged, less exploitable strategy.
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop + 8
+draw-aware post-flop buckets), `level="standard"`, seed 0. Only the blueprint
+training budget changed (120,000 → 300,000 deals). **Same** best-response
+exploiter budget (150k iters/seat) and eval hands for baseline and candidate, per
+the routine's "same level for baseline and candidate" rule.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline (120k) | Candidate (300k) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | **+3.289** | **−5.367** | −8.66 — **but the candidate BR is negative → invalid** (see below) |
+| `nlhe_infosets` | 5,772 | 5,772 | unchanged (no abstraction change) |
+| `win_vs_random` | +63.71 (CI ±16.47) | +83.41 (CI ±16.62) | +19.70 (~1.6σ, borderline) |
+| `win_vs_call_station` | +111.05 (CI ±17.58) | +102.43 (CI ±17.28) | −8.62 (within CI, noise) |
+| `win_vs_maniac` | +65.28 (CI ±18.80) | +64.22 (CI ±18.72) | −1.06 (noise) |
+| `win_vs_tight_aggressive` | **+8.37** (CI ±13.90) | **−5.41** (CI ±13.14) | −13.78 (~1.4σ, not significant, but the wrong direction) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched code paths) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (push/fold trained separately) |
+
+**Why the exploitability number is invalid (the decisive finding).** The
+best-response exploiter is trained to a *fixed* 150k iters/seat for both runs. Its
+convergence curve tells the story:
+
+| BR iters | Baseline BR (bb/100) | Candidate BR (bb/100) |
+|---|---|---|
+| 10,000 | −28.87 | −34.97 |
+| 25,000 | −17.97 | −25.49 |
+| 50,000 | −8.81 | −17.05 |
+| 100,000 | −0.99 | −9.67 |
+| 150,000 | **+3.29** (converged, ≥ 0) | **−5.37** (still rising, < 0) |
+
+The baseline exploiter reaches a positive best-response value by 150k (invariant 5
+holds). Against the *more converged* 300k blueprint, the same-budget exploiter is
+**still climbing and still negative** at 150k — it simply hasn't found the
+counter-strategy yet. So the candidate's "−5.37" is not a lower exploitability; it
+is an **under-converged measurement**. Per `DEPENDENCIES.md` invariant 5, a
+negative best-response value must never be shipped on. Fairly measuring a
+longer-trained blueprint would require scaling the exploiter budget up *in the
+same run* (which the routine forbids — the eval budget must match the baseline).
+
+**Gate check:**
+- `python -m pytest -q` green: 39 passed (measured on the reverted tree; the
+  change was a constant in `LEVELS`, so tests are unaffected either way).
+- Invariants: Kuhn/Leduc unchanged; bot still crushes random/call-station/maniac
+  significantly. **Invariant 5 BROKEN by the candidate** (BR = −5.37 < 0).
+- Primary metric: the apparent exploitability drop is an artifact of the
+  under-converged exploiter, not a real reduction — so "primary metric improves"
+  is **not** satisfied by a valid measurement.
+- No-regression: `win_vs_tight_aggressive` moved the wrong way (+8.37 → −5.41,
+  within CI so not *significant*, but not an improvement either).
+
+**Verdict: NO CHANGE / REGRESSION.** Reverted the training-budget bump; the
+committed bot (120k) is unchanged. The lesson for a future session: "train
+longer" can only be validated if the best-response exploiter is scaled alongside
+the blueprint (so the BR stays ≥ 0), which is a paired-budget change, not a
+one-line bump — the current fixed-exploiter design can't certify it. History row
+records the (unchanged) baseline metrics for continuity.
+
+**Environment note:** as in prior runs, bare `pytest -q` fails collection with
+`ModuleNotFoundError: No module named 'pokerbot'` (the console script doesn't put
+cwd on `sys.path`); `python -m pytest -q` passes cleanly. Not a code regression.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop
