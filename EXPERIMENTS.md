@@ -15,6 +15,64 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-18 — train the NLHE blueprint 8× longer (120k → 960k deals)
+
+**Idea:** backlog item #1 ("train longer"). The blueprint MCCFR trains for
+120k deals at `standard`; the in-abstraction best-response exploiter is trained
+in the *same* 8-bucket abstraction, so its theoretical floor is 0. More bot
+training should therefore drive the measured in-abstraction exploitability
+toward 0. Raised `LEVELS["standard"]` `nlhe_train` 120000 → 960000 (only that
+one number; kuhn/leduc/eval/pushfold budgets and the abstraction/tree/config
+all unchanged, so the comparison is a clean paired before/after).
+
+**Hypothesis:** exploitability converges ~O(1/√T), so an 8× training increase
+should cut it roughly 2.8× (≈3.29 → ≈1.2 bb/100), a decisive win beyond the
+routine's 1–2 bb/100 noise band, with no invariant broken.
+
+**Setup:** identical to baseline except bot training (heads-up 20 BB, pot +
+all-in, 169 pre-flop + 8 post-flop buckets, seed 0). Baseline computed at 120k
+first (`nlhe_exploitability_bb100` reproduced the committed 2026-07-01 row
+**3.289** exactly — determinism check), then the 960k candidate on the same
+evaluation budget. Baseline run 801s; candidate 1753s.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline (120k) | Candidate (960k) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | **+3.289** (BR converged, ends ≥0) | **−13.795** (BR **not** converged — invalid) | n/a |
+| `win_vs_random` | +63.71 ±16.47 | +81.84 ±16.06 | +18.13 |
+| `win_vs_call_station` | +111.05 ±17.58 | +99.13 ±16.97 | −11.92 (within CI) |
+| `win_vs_maniac` | +65.28 ±18.80 | +47.18 ±18.26 | −18.10 (≈ at CI edge, within CI) |
+| `win_vs_tight_aggressive` | +8.37 ±13.90 | +8.00 ±13.14 | −0.37 (flat) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (isolation confirmed) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged |
+| `nlhe_infosets` | 5772 | 5772 | unchanged |
+
+**The exploiter never converges against the sharper bot** — the best-response
+curve (bb/100 vs BR iters) stays deeply negative:
+
+| BR iters | Baseline BR | Candidate BR |
+|---|---|---|
+| 10k | −28.87 | −38.96 |
+| 50k | −8.81 | −24.13 |
+| 100k | −0.99 | −17.68 |
+| 150k | **+3.29** (crosses 0) | **−13.80** (still rising, far from 0) |
+
+**Verdict: NO CHANGE (reverted).** The 960k bot is almost certainly stronger
+(win_vs_random +18; the 150k exploiter can't even break even against it), but
+the objective evaluation **cannot validly confirm it at the current exploiter
+budget**. A negative best-response value means the exploiter is under-trained
+(DEPENDENCIES.md invariant #5: *never ship on a negative exploitability*), so
+the primary metric is unmeasurable here — not an improvement beyond noise. The
+finding: **the fixed 150k / `expl_max` exploiter budget is the binding
+constraint on measuring a stronger blueprint.** A valid "train longer"
+evaluation must *jointly* scale `expl_max` (and likely `expl_eval`) until the
+best response reconverges to ≥0 against the 960k bot — a much longer run,
+deferred to a dedicated session. Reverted the `nlhe_train` bump; appended
+today's baseline row to `metrics_history.csv`; no code shipped.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop
