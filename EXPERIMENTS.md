@@ -15,6 +15,74 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-19 — train the NLHE blueprint longer (120k → 250k deals)
+
+**Idea:** backlog #1. Chance-sampling MCCFR converges ~O(1/√T), so training the
+blueprint for more deals should move it closer to the abstract Nash equilibrium
+and lower its exploitability. Bumped only the `standard` level's blueprint
+training count in `metrics.py:LEVELS` from 120,000 → 250,000 deals (a single
+config value; nothing else touched). The best-response exploiter budget
+(`expl_max=150,000`/seat), eval budgets, seeds and abstraction were held fixed,
+so baseline (120k) and candidate (250k) are a paired comparison.
+
+**Hypothesis:** a better-converged blueprint sits closer to abstract-Nash, so a
+fixed-budget best response exploits it less → `nlhe_exploitability_bb100` drops.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline (120k) | Candidate (250k) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | **+3.289** (valid) | **−3.419** (INVALID) | see below |
+| `nlhe_infosets` | 5,772 | 5,772 | unchanged |
+| `win_vs_random` | +63.71 (CI ±16.47) | +73.74 (CI ±16.27) | +10.03 |
+| `win_vs_call_station` | +111.05 (CI ±17.58) | +104.22 (CI ±17.61) | −6.83 (within CI) |
+| `win_vs_maniac` | +65.28 (CI ±18.80) | +74.28 (CI ±18.69) | +9.00 |
+| `win_vs_tight_aggressive` | +8.37 (CI ±13.90) | +9.43 (CI ±13.58) | +1.06 |
+| `kuhn` / `leduc` exploitability | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched paths) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (preflop-only, separate trainer) |
+
+**Why the primary metric is invalid (the decisive point).** The best-response
+exploitability is a *lower bound* built from a fixed-budget (150k/seat) exploiter.
+The exploit curves show what happened:
+
+- Baseline (120k blueprint): BR climbs `−28.9 → −18.0 → −8.8 → −0.99 → **+3.29**`
+  at 150k — it **crosses zero**, so +3.29 is a valid positive lower bound.
+- Candidate (250k blueprint): BR climbs `−33.8 → −23.9 → −15.4 → −7.75 → **−3.42**`
+  at 150k — it **never crosses zero**. The whole curve is shifted down: the
+  stronger, better-converged blueprint is a *harder target*, so the same 150k
+  exploiter is now under-trained and can't even reach break-even.
+
+A negative BR value is exactly the case DEPENDENCIES invariant 5 warns about
+("a negative number means the exploiter is under-trained or the measurement is
+wrong — never ship on it"). So −3.419 is a **measurement artifact, not a real
+exploitability**, and comparing +3.289 (valid) to −3.419 (invalid) is
+apples-to-oranges. The apparent "improvement" cannot be certified.
+
+**Gate check:**
+- `python -m pytest -q` green: **39 passed** (config-only change; no code paths
+  altered).
+- Invariants: Kuhn/Leduc unchanged; bot still crushes random/call-station/maniac
+  significantly (all still significant, three of four rose). **Invariant 5 is
+  VIOLATED for the candidate** — BR exploitability ends at −3.419 < 0. That alone
+  blocks acceptance.
+- Primary metric: cannot be validly compared (candidate BR under-converged).
+- Regression check: `win_vs_call_station` fell 6.83 bb/100 but well within its
+  ±17.58 CI (not significant); no category significantly regressed. The block is
+  the invalid primary metric, not a win-rate regression.
+
+**Verdict: NO CHANGE (inconclusive — invariant 5 broken).** Reverted the config
+(`standard` back to 120,000 deals); nothing shipped. History row for 2026-07-19
+records the unchanged (120k) bot's numbers so the shipped-bot series stays honest.
+The rising win rates (random/maniac +9–10 bb/100) hint the longer-trained bot may
+genuinely be stronger, but that can only be certified once the exploiter is
+converged against it. **Follow-up (a separate, measurement-scoped session):**
+raise `expl_max` (e.g. to 250k–400k/seat) until the BR reconverges to a valid
+positive bound, re-baseline, then re-test training-longer against that
+properly-resolved exploiter. Bumping blueprint training without also strengthening
+the exploiter just outruns the measurement.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop
