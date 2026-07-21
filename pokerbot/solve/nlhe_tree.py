@@ -150,18 +150,25 @@ class FastNLHECFR:
 
         rs = node.regret_sum
         ss = node.strategy_sum
+        # Quadratic (gamma=2) strategy averaging: weight each iteration's
+        # contribution to the average strategy by t**2 rather than t.  This is
+        # the DCFR averaging schedule (Brown & Sandholm 2019, gamma=2) that is
+        # already the default for the exact solvers (see cfr.py/tree.py); it
+        # weights later, better-converged iterations more heavily.  Regret
+        # updates stay CFR+ (regret-matching-plus, negatives floored at 0).
+        tw = t * t
         if player == 0:
             cf = r1
             for i in range(n):
                 v = rs[i] + cf * (util0[i] - nv0)
                 rs[i] = v if v > 0.0 else 0.0
-                ss[i] += t * r0 * strat[i]
+                ss[i] += tw * r0 * strat[i]
         else:
             cf = r0
             for i in range(n):
                 v = rs[i] + cf * (util1[i] - nv1)
                 rs[i] = v if v > 0.0 else 0.0
-                ss[i] += t * r1 * strat[i]
+                ss[i] += tw * r1 * strat[i]
         return nv0, nv1
 
     def average_strategy(self) -> TabularStrategy:

@@ -15,6 +15,82 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-21 — quadratic (γ=2) strategy averaging in the NLHE trainer
+
+**Idea:** the NLHE blueprint trainer (`FastNLHECFR` in `solve/nlhe_tree.py`) uses
+CFR+ with **linear** strategy averaging — each iteration's contribution to the
+average strategy is weighted by `t` (`ss[i] += t * reach * strat[i]`). But the
+project's exact solvers (`cfr.py`/`tree.py`) already default to **Discounted
+CFR** with **γ=2 (quadratic) averaging** because it converges faster on
+Leduc-scale games. Bring the same γ=2 schedule to the NLHE trainer: weight the
+strategy sum by `t²` instead of `t` (`tw = t*t; ss[i] += tw * reach * strat[i]`).
+This weights later, better-converged iterations more heavily. One-term change;
+regret updates stay CFR+ (regret-matching-plus, negatives floored at 0). The
+card abstraction, info-set keys, betting tree, seeds and the best-response
+*exploiter* (its own averaging left at linear, so the measurement is unchanged)
+are all untouched — so `nlhe_infosets` and Kuhn/Leduc are provably identical and
+this isolates the averaging effect on the bot.
+
+**Hypothesis:** γ=2 averaging (backlog item 5, the DCFR averaging component)
+tightens the blueprint's average strategy toward the abstract Nash, lowering
+best-response exploitability without disturbing the win-rate panel.
+
+**Setup:** identical to the 2026-07-01 baseline (heads-up 20 BB, pot + all-in,
+169 pre-flop + 8 draw-aware post-flop buckets, MCCFR 120k, `level="standard"`).
+Baseline (seed 0) reproduced the committed 2026-07-01 numbers **exactly**
+(deterministic), confirming isolation.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline | Candidate | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | **1.543** | **−1.746** (lower = better) |
+| `nlhe_infosets` | 5772 | 5772 | 0 (abstraction untouched) |
+| `win_vs_random` | +63.71 | +67.40 | +3.69 |
+| `win_vs_call_station` | +111.05 | +107.57 | −3.48 (within CI) |
+| `win_vs_maniac` | +65.28 | +60.08 | −5.20 (within CI) |
+| `win_vs_tight_aggressive` | +8.37 | −2.44 | −10.81 (within CI ±13.9 — see below) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged |
+| `pushfold_jam_pct` | 62.1 | 61.5 | −0.6 (still Nash 60–70%) |
+
+**Multi-seed paired confirmation (the decisive evidence).** A single seed can't
+separate a ~1.7 bb/100 move from the routine's 1–2 bb/100 noise band, so I ran a
+**paired** baseline-vs-candidate comparison at seeds 0, 1, 2 (baseline code in a
+clean worktree, candidate in place, same seeds ⇒ same deals):
+
+| seed | `nlhe_exploitability_bb100` base → cand | Δ | `win_vs_tight_aggressive` base → cand | Δ |
+|---|---|---|---|---|
+| 0 | 3.289 → 1.543 | **−1.746** | +8.37 → −2.44 | −10.81 |
+| 1 | 3.602 → 1.755 | **−1.847** | −5.97 → −5.78 | +0.19 |
+| 2 | 8.127 → 6.205 | **−1.922** | −2.62 → +0.88 | +3.50 |
+
+The exploitability drop is **consistent on all three seeds** (mean −1.84, spread
+±0.09) — the absolute level swings with the training seed (3.3 → 8.1) but the
+*paired* delta is rock-steady, i.e. real signal, not the shared training-seed
+noise. The seed-0 TAG drop (−10.81) **did not replicate** (seeds 1–2: +0.19,
++3.50); across seeds TAG is flat and always within its ±13.9 CI — so it was
+noise, not a regression. random/call-station/maniac stay hugely positive and
+significant every seed.
+
+**Gate check:**
+- `python -m pytest -q` green: **39 passed** (incl. `test_subgame.py` — search-off
+  still bit-identical to the blueprint, since both use the retrained bot).
+- Invariants: evaluator exact; Kuhn/Leduc untouched and unchanged (isolation
+  confirmed); bot still crushes random/call-station/maniac by a wide significant
+  margin on every seed; best-response exploitability ends **positive** on every
+  seed (1.543 / 1.755 / 6.205 — BR invariant holds). Invariants 6–7 (search)
+  untouched — the search path and `SEARCH_LEVELS` were not modified.
+- Primary metric: `nlhe_exploitability_bb100` lower by ~1.84 bb/100, paired and
+  consistent across 3 seeds — beyond the 1–2 bb/100 noise band as a paired delta.
+- No regression: no `win_vs_*` category drops consistently beyond its CI (the
+  one seed's TAG dip did not replicate); exploitability did not rise.
+
+**Verdict: IMPROVEMENT.** Kept the change (γ=2 quadratic averaging in
+`FastNLHECFR`), appended the seed-0 row to `metrics_history.csv`, and regenerated
+`EVALUATION.md` + `figures/` at `level=standard`.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop
