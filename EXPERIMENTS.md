@@ -15,6 +15,82 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-22 — train the blueprint longer (120k → 360k MCCFR deals)
+
+**Idea:** backlog item #1. MCCFR converges toward the abstract Nash at
+~O(1/√T), so tripling the blueprint's training deals (`LEVELS["standard"]`
+`nlhe_train` 120,000 → 360,000) should drive the in-abstraction best-response
+exploitability down. The abstraction, tree and every other code path are
+untouched, so this is a maximally isolated, reversible one-line config change.
+
+**Hypothesis:** exploitability drops by more than the 1–2 bb/100 noise band
+while the win-rate panel is unchanged. The comparison is tightly *paired*:
+baseline and candidate both use `seed=0`, so the candidate's 360k blueprint is a
+strict continuation of the same deal stream, and the exploiter/eval seeds are
+identical.
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop +
+8 post-flop draw-aware buckets), same `level="standard"` **eval** budget
+(exploiter capped at `expl_max=150,000` iters/seat — unchanged), seed 0. Only
+the blueprint training length changed.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline (120k) | Candidate (360k) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | **+3.289** | **−6.838** | see caveat — **invalid comparison** |
+| `nlhe_infosets` | 5,772 | 5,772 | unchanged (same abstraction) |
+| `win_vs_random` | +63.71 | +71.34 | +7.63 |
+| `win_vs_call_station` | +111.05 | +109.95 | −1.10 (within CI) |
+| `win_vs_maniac` | +65.28 | +67.70 | +2.42 (within CI) |
+| `win_vs_tight_aggressive` | **+8.37** | **−11.62** | **−19.99** (≈ its 95% CI ±14 — regression) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched path) |
+| `pushfold_jam_pct` | 62.1 | 62.1 | unchanged (push/fold is a separate preflop solve) |
+
+**Why the exploitability number is invalid (the key finding).** The candidate's
+best-response value is **negative** (−6.838), which breaks invariant 5 ("a BR
+must be ≥ ~0; a negative number means the exploiter is under-trained — never ship
+on it"). The exploit curves show exactly this:
+
+| BR iters/seat | Baseline BR (bb/100) | Candidate BR (bb/100) |
+|---|---|---|
+| 10,000 | −28.87 | −35.93 |
+| 25,000 | −17.97 | −26.63 |
+| 50,000 | −8.81 | −18.38 |
+| 100,000 | −0.99 | −11.11 |
+| 150,000 | **+3.29** (converged, crossed 0) | **−6.84** (still climbing steeply) |
+
+Against the 120k blueprint the fixed 150k-iteration exploiter converges and
+crosses zero (+3.29). Against the *stronger, tighter* 360k blueprint the **same**
+exploiter budget no longer converges — it is still deep in negative territory and
+rising fast at 150k. So −6.838 is an **under-training artifact of the fixed-budget
+exploiter, not evidence the bot became unexploitable**; the 3.289 → −6.838 move
+is not a valid measurement of the primary metric. Correctly measuring the 360k
+bot would require scaling the exploiter budget (`expl_max`) up in lockstep so the
+BR re-converges to a non-negative value — a larger, more expensive change than a
+single daily run should carry.
+
+**Gate check:**
+- `python -m pytest -q` green: **39 passed** (twice — before and after the edit;
+  the change is a level constant, so tests are unaffected).
+- Invariants: Kuhn/Leduc unchanged; bot still crushes random/call-station/maniac
+  by a wide significant margin (+71.3 / +110.0 / +67.7). **Invariant 5 FAILS**
+  for the candidate (BR ends −6.84 < 0) → the measurement is not shippable.
+- Primary metric: **cannot claim an improvement** — the candidate's BR is
+  under-converged (negative), so its exploitability is not a valid bound.
+- Regression: `win_vs_tight_aggressive` fell +8.37 → −11.62 (≈ 20 bb/100, at/beyond
+  the two-sample CI), a regression against the TAG baseline.
+
+**Verdict: REGRESSION (reverted).** Training the blueprint 3× longer without
+scaling the best-response exploiter budget invalidates the exploitability metric
+(the fixed exploiter can no longer converge to a valid BR) and shifted the noisy
+TAG matchup unfavourably. Reverted `metrics.py` to 120k; committed the history
+row (baseline numbers — the shipped bot is unchanged) and this entry. Follow-up
+for an interactive session: raise `expl_max` (e.g. 300–400k/seat) alongside the
+longer blueprint so the exploitability bound stays valid, then re-test train-longer.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop
