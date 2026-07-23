@@ -15,6 +15,77 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-23 — Linear-CFR+ weighting on the NLHE trainer's regrets
+
+**Idea:** the NLHE blueprint trainer (`FastNLHECFR`) is CFR+ — regrets floored at
+0, but each iteration's instantaneous regret enters the accumulator *unweighted*
+— while its **strategy** sum already uses linear (`t`) weighting
+(`ss += t * reach * strat`). Add the matching `t` weight to the regret update
+(`cf = t * r_opp` instead of `cf = r_opp`) to make it full **Linear CFR+** (the
+"Linear CFR" schedule of Brown & Sandholm 2019, *Discounted Regret
+Minimization*), so later, better-converged iterations dominate both accumulators.
+
+**Hypothesis:** Linear CFR converges faster than CFR+ toward the abstract Nash,
+so at the *same* 120k training deals the blueprint would be closer to equilibrium
+and its best-response exploitability would drop — at **zero extra compute** (it's
+one multiply per node). Linear CFR is used with MCCFR in practice (e.g. Pluribus).
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop + 8
+post-flop strength buckets, `level="standard"`, seed 0). Only `FastNLHECFR`'s
+regret weighting changed; the exploiter (`FastExploiterCFR`), the abstraction,
+and all measurement budgets are untouched, so this is a paired before/after on
+the same measurement. Kuhn/Leduc use a different solver (`CFRSolver`) and are
+unaffected.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline (CFR+) | Candidate (Linear-CFR+) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | **3.289** | **14.904** | **+11.62** (far worse, ≫ noise) |
+| `nlhe_infosets` | 5,772 | 5,772 | 0 (same abstraction) |
+| `win_vs_random` | +63.71 | +63.37 | −0.34 (noise) |
+| `win_vs_call_station` | +111.05 | +83.93 | **−27.12** (> CI ±17.58) |
+| `win_vs_maniac` | +65.28 | +44.77 | **−20.51** (> CI ±18.80) |
+| `win_vs_tight_aggressive` | +8.37 | −20.91 | **−29.28** (> CI ±13.90) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (confirms isolation) |
+| `pushfold_jam_pct` | 62.1 | 64.5 | +2.4 |
+
+Candidate best-response curve rose monotonically and ended far higher:
+`[[10000,-20.07],[25000,-7.64],[50000,+2.52],[100000,+10.68],[150000,+14.90]]`
+vs baseline `[[10000,-28.87],[25000,-17.97],[50000,-8.81],[100000,-0.99],
+[150000,+3.29]]` — the exploiter finds a **much** bigger edge against the
+Linear-CFR+ bot, i.e. it is markedly *further* from equilibrium.
+
+**Why it failed (the lesson):** Linear CFR's `t`-weighting is designed for
+*full* CFR, where each iteration's regret is an exact traversal. This trainer is
+**chance-sampled MCCFR**: each iteration's regret is a single-deal Monte-Carlo
+estimate. Weighting that noisy per-deal sample by `t` (up to 120,000) blows up
+the variance of the regret accumulator — the last, highest-variance samples
+dominate — so regret-matching chases sampling noise and the average strategy
+lands *further* from the abstract Nash. CFR+ with plain (unweighted) regret
+accumulation is the right pairing for chance sampling here; the linear weighting
+belongs only on the strategy sum (which averages out), where it already is.
+
+**Gate check:**
+- `python -m pytest -q` green before and after (39 passed); the change was
+  reverted so the tree is back to the committed CFR+ trainer.
+- Invariants: Kuhn/Leduc untouched and identical; **but** invariant 4 (crush the
+  baselines) weakened (call-station/maniac/TAG all dropped beyond their CIs) and
+  the primary metric moved the *wrong* way by +11.6 bb/100 — a clear regression.
+- No cherry-picking: baseline reproduced the committed 2026-07-01 row exactly
+  (3.289, deterministic seed 0) before the comparison, so the +11.6 is real.
+
+**Verdict: REGRESSION.** Reverted `pokerbot/solve/nlhe_tree.py` to the CFR+
+trainer; the shipped bot is unchanged. History row for 2026-07-23 records the
+(kept) baseline metrics so the trail stays continuous. Backlog note for future
+runs: if Linear/Discounted CFR is retried on this MCCFR trainer, it must be the
+*variance-controlled* form (e.g. weight by `sqrt(t)` or apply DCFR's bounded
+discount factors `t^α/(t^α+1)` rather than an unbounded `×t`, and/or average
+over a mini-batch of deals per iteration) — an unbounded per-sample `×t` weight
+is the failure mode documented here.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop
