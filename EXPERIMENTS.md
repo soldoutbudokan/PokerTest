@@ -15,7 +15,90 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
-## 2026-07-24 — train the blueprint longer (120k → 300k MCCFR deals)
+## 2026-07-24 (b) — finer post-flop strength buckets (8 → 12)
+
+**Idea:** backlog #3. The post-flop card abstraction lumps every made hand into
+8 equal-probability strength buckets per street (×3 draw classes on flop/turn
+since 2026-07-01). Raising `StrengthAbstraction(postflop_buckets=…)` from 8 to
+12 halves the strength width of each bucket, so hands that currently share a
+bucket (e.g. bottom two pair and top two pair) get separate strategies. One-line
+change in `metrics.py`; the betting tree, stack, bet sizes and every measurement
+budget are unchanged.
+
+**Hypothesis:** finer card resolution is the same lever that paid off on
+2026-07-01 (draw-awareness swung `win_vs_tight_aggressive` +20.85), so a finer
+strength split should improve play against the one opponent that punishes coarse
+post-flop decisions (TAG), at the cost of more info sets.
+
+**Why this idea was chosen after the (a) failure:** more buckets *increase* the
+info-set count, so the blueprint gets *less* training per info set — the opposite
+of experiment (a). That keeps the fixed-budget best-response exploiter converged
+(non-negative), so the exploitability measurement stays valid. Confirmed: the
+candidate's BR curve ends **positive** at +3.227 (invariant 5 holds), where (a)'s
+ended at −5.367.
+
+**Setup:** identical to baseline (heads-up 20 BB, pot + all-in, 169 pre-flop
+buckets, draw-aware post-flop, MCCFR 120k deals, seed 0), `level="standard"` for
+both sides. Baseline is the same deterministic run used in (a) — it reproduces
+the committed 2026-07-01 row exactly.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline (8) | Candidate (12) | Δ | Verdict |
+|---|---|---|---|---|
+| `nlhe_exploitability_bb100` | +3.289 | +3.227 | **−0.062** | deep inside the 1–2 bb/100 noise band — not signal |
+| `nlhe_infosets` | 5772 | 7644 | +32% | expected (finer abstraction) |
+| `win_vs_random` | +63.71 (±16.47) | +71.03 (±16.50) | +7.32 | within CI |
+| `win_vs_call_station` | +111.05 (±17.58) | +101.01 (±17.69) | −10.04 | within CI |
+| `win_vs_maniac` | +65.28 (±18.80) | +57.97 (±18.77) | −7.31 | within CI |
+| `win_vs_tight_aggressive` | **+8.37** (±13.90) | **−5.08** (±14.07) | **−13.45** | within CI (13.45 < 13.90) but the wrong direction |
+| `pushfold_jam_pct` | 62.1 | 62.1 | 0 | unchanged (pre-flop only) |
+| `kuhn` / `leduc` exploitability | 0.002265 / 0.0046 | 0.002265 / 0.0046 | 0 | unchanged (untouched path) |
+
+BR exploit curve: baseline `[10k −28.9, 25k −18.0, 50k −8.8, 100k −1.0, 150k
++3.29]` → candidate `[10k −29.6, 25k −18.4, 50k −9.0, 100k −1.3, 150k +3.23]` —
+near-identical shape, both crossing zero at ~110k. The exploiter is equally
+converged against both bots, so the two exploitability numbers are directly
+comparable, and they are the same to within 0.06 bb/100.
+
+**Gate check:**
+- `python -m pytest -q` with the candidate applied: green (**39 passed**).
+- Invariants: Kuhn/Leduc unchanged; bot still beats random/call-station/maniac by
+  a wide significant margin; BR exploitability ends **positive** (+3.227), so
+  invariant 5 holds and the measurement is trustworthy.
+- **No regression:** no `win_vs_*` category dropped by more than its 95% CI, and
+  exploitability did not rise. The change is regression-free.
+- **But the primary metric does not improve:** exploitability moved −0.062
+  bb/100 (noise, not signal) and `win_vs_tight_aggressive` moved −13.45 (worse).
+  The routine requires the primary metric to improve *beyond noise*; "not a
+  regression" is necessary but not sufficient.
+
+**Verdict: NO CHANGE.** Reverted to `postflop_buckets=8`. Finer strength buckets
+bought nothing measurable here: they cost 32% more info sets while the aggregate
+numbers stayed flat, and the TAG result drifted the wrong way. The plausible
+reason is dilution — at a fixed 120k training deals, spreading the same MCCFR
+samples over 32% more info sets leaves each one less converged, cancelling the
+resolution gain. That also explains why this can't simply be fixed by pairing it
+with more training: experiment (a) shows raising `train_iters` breaks the
+exploitability measurement under the current fixed exploiter budget. **Combined
+lesson from (a) and (b): the abstraction-size and training-budget knobs are
+coupled, and the evaluation's fixed 150k exploiter budget bounds how far either
+can move before the primary metric stops being measurable.** A future session
+wanting to push on abstraction fidelity should first re-baseline the whole
+measurement (scale `train_iters` *and* `expl_max` together), or switch the
+primary metric to something budget-independent. Higher-value untried backlog
+that doesn't hit this wall: draw/equity-aware bucketing that adds *information*
+rather than *bucket count* (backlog #8), and richer bet sizing (#2).
+
+**History note:** no new `metrics_history.csv` row was appended for this second
+experiment — the verdict is NO CHANGE, so today's recorded metrics are the
+baseline ones already written by experiment (a) in the same session. Appending an
+identical duplicate 2026-07-24 row would add no information and would double-count
+the day in `figures/progress.png`.
+
+---
+
+## 2026-07-24 (a) — train the blueprint longer (120k → 300k MCCFR deals)
 
 **Idea:** backlog #1. MCCFR exploitability converges ~O(1/√T), so training the
 NLHE blueprint 2.5× longer (120,000 → 300,000 chance-sampled deals at
