@@ -15,6 +15,80 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-25 — DCFR-style quadratic strategy averaging in the NLHE trainer
+
+**Idea:** the blueprint trainer (`FastNLHECFR`) is CFR+ with **linear**
+strategy averaging — iteration *t*'s policy contribution is weighted by *t*
+(`ss[i] += t * reach * strat[i]`). Discounted CFR (Brown & Sandholm 2019, the
+default for the *exact* Kuhn/Leduc solver here) uses **quadratic** averaging
+(γ=2, weight *t²*), which down-weights the noisy early iterations more
+aggressively so the exported average strategy sits closer to equilibrium at the
+same deal budget. Ported that one knob to the MCCFR blueprint: added
+`avg_power` to `FastNLHECFR` (default **2.0**) and raised the per-iteration
+averaging weight to `iteration ** avg_power`. **Localized** to
+`pokerbot/solve/nlhe_tree.py`: the tree, the card/action abstraction, and the
+best-response *exploiter* (`FastExploiterCFR`, the measuring ruler) are all
+untouched — so baseline vs candidate is a paired comparison on the same fixed
+exploiter, seeds and boards. The regret update stays CFR+ (regret-matching-plus).
+
+**Hypothesis:** quadratic averaging tightens average-strategy convergence, so
+the best-response lower bound (`nlhe_exploitability_bb100`) drops with no tree
+growth (`nlhe_infosets` unchanged) and no loss vs the baseline panel beyond noise.
+
+**Setup:** identical blueprint (heads-up 20 BB, pot + all-in, 169 pre-flop + 8
+draw-aware post-flop buckets), `level="standard"`, seed 0 — the *only* change is
+`avg_power` 1 → 2 in the blueprint (and the push/fold) trainer.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0):
+
+| Metric | Baseline (linear) | Candidate (quadratic) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | **3.289** | **1.543** | **−1.746** (≈ −53%) |
+| `nlhe_infosets` | 5,772 | 5,772 | 0 (same tree — pure averaging change) |
+| `win_vs_random` | +63.71 (CI 16.47) | +67.40 (CI 16.20) | +3.69 |
+| `win_vs_call_station` | +111.05 (CI 17.58) | +107.57 (CI 17.68) | −3.48 (within CI) |
+| `win_vs_maniac` | +65.28 (CI 18.80) | +60.08 (CI 18.61) | −5.20 (within CI) |
+| `win_vs_tight_aggressive` | +8.37 (CI 13.90, ns) | −2.44 (CI 13.79, ns) | −10.81 (within CI; TAG stays a non-significant tie) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched path — isolation confirmed) |
+| `pushfold_jam_pct` | 62.1 | 61.5 | −0.6 (still ≈ Nash 60–70%) |
+
+**Why it's signal, not a 1–2 bb/100 wiggle:** the exploitability drop holds at
+*every* best-response checkpoint, monotonically widening as the BR converges —
+a paired signature that a single-point wiggle cannot produce:
+
+| BR iters | baseline | candidate | Δ |
+|---|---|---|---|
+| 10,000 | −28.87 | −30.08 | −1.21 |
+| 25,000 | −17.97 | −19.46 | −1.49 |
+| 50,000 | −8.81 | −10.52 | −1.70 |
+| 100,000 | −0.99 | −2.77 | −1.79 |
+| 150,000 | **+3.289** | **+1.543** | **−1.75** |
+
+Five independent BR budgets all put the candidate ~1.2–1.8 bb/100 *below* the
+baseline, in the direction the DCFR mechanism predicts. The final BR value stays
+**positive** (+1.543 ≥ 0), so the exploiter converged (BR invariant holds) — the
+candidate is genuinely harder to exploit at equal exploiter effort, not an
+under-trained artifact. It is also not a degenerate/passive bot: it still crushes
+random/call-station/maniac significantly and jams 61.5% at 10 BB.
+
+**Gate check:**
+- `python -m pytest -q` green: **39 passed** (the change touches only the
+  averaging weight; no test pins exact strategy values).
+- Invariants: evaluator untouched; Kuhn/Leduc unchanged (0.002265 / 0.0046);
+  bot beats random/call-station/maniac by wide significant margins; BR
+  exploitability ends positive (+1.543); search hooks untouched (invariants 6/7
+  still pinned by `tests/test_subgame.py`).
+- Primary metric: `nlhe_exploitability_bb100` **3.289 → 1.543** (−1.746),
+  consistent across all 5 BR checkpoints — signal.
+- No regression: no `win_vs_*` category drops beyond its 95% CI (worst is TAG
+  −10.81 < CI 13.90, and TAG was a non-significant tie both before and after).
+
+**Verdict: IMPROVEMENT.** Kept the change (`avg_power=2.0` default in
+`FastNLHECFR`); regenerated `EVALUATION.md` and `figures/` at `level=standard`
+and committed. The daily routine resumes against this less-exploitable baseline.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop

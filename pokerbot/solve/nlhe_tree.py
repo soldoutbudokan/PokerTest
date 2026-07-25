@@ -85,11 +85,20 @@ class CompiledBettingTree:
 class FastNLHECFR:
     """Chance-sampling CFR+ over the compiled betting tree."""
 
-    def __init__(self, game: NLHEGame, tree: Optional[CompiledBettingTree] = None):
+    def __init__(self, game: NLHEGame, tree: Optional[CompiledBettingTree] = None,
+                 avg_power: float = 2.0):
         self.game = game
         self.tree = tree or CompiledBettingTree.build(game)
         self.nodes: Dict[Tuple[int, object], _Node] = {}
         self.iterations = 0
+        # Exponent on the per-iteration strategy-averaging weight.  Plain CFR+
+        # uses *linear* averaging (contribution of iteration ``t`` weighted by
+        # ``t``, i.e. ``avg_power=1``).  Discounted-CFR-style *quadratic*
+        # averaging (weight ``t**2``, the default here) down-weights the noisy
+        # early iterations more aggressively, so the exported average strategy
+        # sits closer to equilibrium at the same deal budget.  The regret update
+        # is untouched (still CFR+ regret-matching-plus).
+        self.avg_power = avg_power
 
     def run(self, iterations: int, rng: Optional[random.Random] = None) -> None:
         rng = rng or random.Random()
@@ -99,8 +108,10 @@ class FastNLHECFR:
         for _ in range(iterations):
             self.iterations += 1
             hole, board = deal(rng)
-            self._cfr(root, 1.0, 1.0, float(self.iterations), hole, board,
-                      ab, {}, [None])
+            # ``t`` carries the polynomial averaging weight (iteration**avg_power)
+            # applied at every visited node's strategy-sum update in ``_cfr``.
+            t = float(self.iterations) ** self.avg_power
+            self._cfr(root, 1.0, 1.0, t, hole, board, ab, {}, [None])
 
     def _cfr(self, nid, r0, r1, t, hole, board, ab, bucket_cache, sign):
         tree = self.tree
