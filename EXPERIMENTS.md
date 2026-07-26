@@ -15,6 +15,115 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-26 — DCFR discount tuning for the NLHE MCCFR trainer
+
+**Idea:** backlog item 5. The NLHE trainer (`FastNLHECFR`) is **CFR+** —
+negative regrets floored at 0, linear strategy averaging — while the exact
+solvers (`CFRSolver`/`TreeCFR`) use **Discounted CFR**. Sweep DCFR's
+`(α, β, γ)` on Leduc, where exploitability is *exact* and a sweep is cheap, and
+adopt the winner in the NLHE trainer.
+
+**Hypothesis:** flooring negative regrets throws away information. DCFR's
+gentler negative-regret discount lets an action that looked bad early recover
+when the opponent's strategy drifts, which should converge to a less
+exploitable blueprint at the same 120k deals.
+
+**Leduc sweep** (exact exploitability, 39 configs at 10k iterations, then 38
+refinement configs at 20k; `TreeCFR`, both stages ranked on final
+exploitability):
+
+| Config | Leduc exploitability @20k |
+|---|---|
+| `α=3.0, β=0.5, γ=4.0` | **0.003879** (best) |
+| `α=3.0, β=0.5, γ=3.0` | 0.003950 |
+| `α=3.0, β=0.5, γ=2.0` | 0.004108 |
+| DCFR published default `α=1.5, β=0.0, γ=2.0` | 0.006309 |
+| **CFR+ (what the NLHE trainer uses)** | **0.006763** |
+
+β is the sharp lever: every `β=0.5` config beat every `β∈{-3, 0, 1, 2}` one, and
+α∈[2,3] / γ∈[2,4] is a flat plateau (0.0039–0.0046). Adopted
+**`(α, β, γ) = (3.0, 0.5, 2.0)`** — best-cluster α/β with the published γ=2,
+since γ is Leduc-indistinguishable here and a higher γ concentrates the average
+on the last iterations, which adds Monte-Carlo variance in a *sampled* trainer
+in a way full-tree Leduc can't show.
+
+**Implementation** (all reverted, see verdict): `FastNLHECFR` gained a
+`variant`/`α`/`β`/`γ` argument. Two tricks keep DCFR affordable under chance
+sampling, where a full O(|I|) discount sweep per deal is unaffordable:
+- **γ in closed form.** Multiplying every strategy sum by `(t/(t+1))^γ` after
+  each iteration leaves a contribution from iteration `s` weighted by
+  `(s/(T+1))^γ ∝ s^γ`, so accumulating with weight `t**γ` at visit time is
+  exactly equivalent and needs no sweep (γ=1 is the linear averaging CFR+ does).
+- **α/β lazily per node.** Each node records the iteration through which it has
+  been discounted and, on its next visit, catches up with the product of the
+  intervening factors read off a cumulative-log table — the same schedule,
+  deferred. Cost: +7% wall-clock on training.
+
+Verified before measuring: with `variant="cfr+"` the trainer is **bit-identical**
+to the pre-change code (max action-probability difference **0.0** over all 5772
+info sets after 20k deals, same seed), so the refactor itself moved nothing. The
+exploiter (`FastExploiterCFR`) was deliberately left on CFR+ so the measuring
+instrument is identical for baseline and candidate.
+
+**Before → after** (`pokerbot.metrics.flatten`, `level=standard`, seed 0, same
+120k training deals):
+
+| Metric | Baseline (CFR+) | Candidate (DCFR 3.0/0.5/2.0) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | +3.289 | **−1.492** | **invalid — see below** |
+| `win_vs_random` | +63.71 (CI ±16.47) | +70.63 (CI ±16.07) | +6.92 (within CI) |
+| `win_vs_call_station` | +111.05 (CI ±17.58) | **+82.27** (CI ±17.42) | **−28.78 — REGRESSION** |
+| `win_vs_maniac` | +65.28 (CI ±18.80) | +60.26 (CI ±18.78) | −5.02 (within CI) |
+| `win_vs_tight_aggressive` | +8.37 (CI ±13.90) | +1.64 (CI ±13.49) | −6.73 (within CI) |
+| `pushfold_jam_pct` | 62.1 | 60.9 | −1.2 (still in the Nash 60–70% band) |
+| `nlhe_infosets` | 5772 | 5772 | unchanged (abstraction untouched) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | identical | untouched code path |
+
+Best-response curves (bb/100 vs exploiter iterations):
+
+| BR iters | 10k | 25k | 50k | 100k | 150k |
+|---|---|---|---|---|---|
+| baseline | −28.87 | −17.97 | −8.81 | −0.99 | **+3.29** |
+| candidate | −31.95 | −21.79 | −13.29 | −5.77 | **−1.49** |
+
+**Gate check — FAILS on two independent counts:**
+- `python -m pytest -q` green (43 passed, 4 new), and the Kuhn/Leduc invariants
+  are untouched. So the code was fine; the *bot* was not.
+- **Invariant 5 broken.** The best response to the candidate is still
+  **negative** (−1.49 bb/100) at the standard 150k-iteration budget. Per
+  `DEPENDENCIES.md` that means the exploiter is under-converged and the
+  measurement is not usable — "never ship on it". The candidate's whole BR curve
+  is shifted ~4–5 bb/100 below the baseline's with the *same shape*, i.e. this
+  bot needs a longer exploiter, not that it is less exploitable. The apparent
+  3.289 → −1.492 "improvement" is a measurement artifact and is **not** claimed.
+- **Regression on a baseline category.** `win_vs_call_station` drops 28.78
+  bb/100. That exceeds the paired 95% bound (√(17.58² + 17.42²) ≈ 24.8), so it
+  is a real regression, not noise — and it is the one opponent that most
+  directly punishes an unbalanced value-betting strategy.
+
+**Reading:** the Leduc win did not transfer. The plausible reason is that Leduc
+is solved by *full-tree* CFR while NLHE is chance-sampled: retaining negative
+regrets (β=0.5) and steepening the strategy average (γ=2 over the CFR+ γ=1)
+both make the average strategy track recent, noisier sampled iterates. On an
+exact tree that is pure speed-up; under sampling it trades bias for variance.
+
+**Verdict: REGRESSION — reverted.** Code restored to CFR+ (`git checkout`);
+today's `metrics_history.csv` row is the unchanged bot's, which reproduced the
+2026-07-01 numbers to the digit (a determinism check worth having).
+
+**For the next session:**
+- If DCFR is retried in the trainer, sweep on **NLHE with a sampled proxy
+  metric** (e.g. exploitability at `level="quick"`), not on Leduc — the
+  full-tree→sampled transfer is what failed here, so a Leduc sweep is the wrong
+  screen for this trainer.
+- γ alone (linear → quadratic averaging, keeping the CFR+ regret floor) is the
+  cheap one-knob version and was never isolated; β=0.5 is the suspect.
+- Any future run that reports an exploitability *drop* should check the BR value
+  is positive first — this run shows a negative BR value moving the headline
+  metric ~4.8 bb/100 in the flattering direction.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop
