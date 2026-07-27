@@ -133,6 +133,16 @@ budget-dependent (comparisons at equal budget, as done here, remain valid).
 Raising `expl_max`, or reporting the BR curve's slope, would make the metric more
 honest — but it would also redefine the column, so it needs its own run.
 
+**Caveat to flag, same cause:** `EVALUATION.md` §4b runs its *own*, smaller best
+response (120k iters/seat, not the metric's 150k) and reports a **negative**
+value — it read −0.84 bb/100 for the previous bot and now reads −2.42. That is
+the under-trained-exploiter effect above, not a new defect: a fixed, unconverged
+BR does *worse* against a harder-to-exploit bot, so making the blueprint better
+pushes this particular number down. The gate's metric
+(`nlhe_exploitability_bb100`, 150k/seat) stays **positive** for both bots
+(+3.289 → +1.459), which is what invariant 5 is checked against. Raising §4b's
+budget until it is positive belongs with the `expl_max` work above.
+
 **Verdict: IMPROVEMENT.** Kept `variant="dcfr"` (1.5, 0, 2) as the
 `FastNLHECFR` default, regenerated `EVALUATION.md` and `figures/` at
 `level=standard`, and appended the 2026-07-27 history row.
