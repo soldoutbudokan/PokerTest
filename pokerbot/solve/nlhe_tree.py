@@ -17,6 +17,7 @@ it directly.
 """
 from __future__ import annotations
 
+import math
 import random
 from typing import Dict, List, Optional, Tuple
 
@@ -26,6 +27,25 @@ from .cfr import TabularStrategy
 from .mccfr import _Node
 
 FOLD_T, SHOWDOWN_T, DECISION = 0, 1, 2
+
+
+class _DNode(_Node):
+    """A regret node that remembers when it was last updated.
+
+    Discounted CFR multiplies *every* information set's regrets by a factor
+    after each iteration.  Sweeping the whole (large) table each iteration would
+    dominate the run time, so the discount is applied **lazily**: a node records
+    the iteration of its last update and, when next visited, catches up on all
+    the discounts it missed.  Because discounting is a plain multiplication that
+    preserves sign (all factors are positive), and an untouched node's regrets
+    cannot change sign in between, catching up in one step is *exactly*
+    equivalent to discounting every iteration.
+    """
+    __slots__ = ("last",)
+
+    def __init__(self, legal: List[int]):
+        super().__init__(legal)
+        self.last = 0
 
 
 class CompiledBettingTree:
@@ -83,26 +103,86 @@ class CompiledBettingTree:
 
 
 class FastNLHECFR:
-    """Chance-sampling CFR+ over the compiled betting tree."""
+    """Chance-sampling CFR over the compiled betting tree.
 
-    def __init__(self, game: NLHEGame, tree: Optional[CompiledBettingTree] = None):
+    Two regret-minimizing variants are supported:
+
+    * ``cfr+`` — regret-matching-plus (negative regrets floored at 0) with
+      linear strategy averaging.
+    * ``dcfr`` — Discounted CFR (Brown & Sandholm 2019): positive regrets,
+      negative regrets and the strategy sum get separate polynomial discounts
+      ``(α, β, γ)``.  This is what the exact solvers
+      (:class:`pokerbot.solve.cfr.CFRSolver`, :class:`pokerbot.solve.tree.TreeCFR`)
+      use on Kuhn/Leduc.
+
+    ``cfr+`` remains the **default** here: DCFR converges to a markedly less
+    exploitable blueprint (see ``EXPERIMENTS.md``, 2026-07-27) but costs
+    ~25 bb/100 against the exploitable ``tight-aggressive`` baseline, which the
+    daily routine's no-regression gate rejects.  The option is kept so that
+    follow-up work can pick the tradeoff up where it was left.
+
+    Two implementation notes make DCFR as cheap per iteration as CFR+:
+
+    * **Strategy averaging needs no discounting at all.**  Discounting the
+      strategy sum by ``(t/(t+1))**γ`` after every iteration leaves iteration
+      ``s``'s contribution weighted by ``(s/T)**γ`` at iteration ``T``; the
+      ``T**-γ`` is common to all actions and cancels when the average strategy
+      is normalized.  So accumulating with weight ``s**γ`` is *identical* to
+      DCFR's discounted sum — and ``γ = 1`` recovers the old linear averaging.
+    * **Regret discounting is applied lazily** per visited node (see
+      :class:`_DNode`), so there is still no global sweep over the table.
+    """
+
+    def __init__(self, game: NLHEGame, tree: Optional[CompiledBettingTree] = None,
+                 variant: str = "cfr+", alpha: float = 1.5, beta: float = 0.0,
+                 gamma: Optional[float] = None):
+        if variant not in ("cfr+", "dcfr"):
+            raise ValueError(f"unknown variant {variant!r}")
         self.game = game
         self.tree = tree or CompiledBettingTree.build(game)
         self.nodes: Dict[Tuple[int, object], _Node] = {}
         self.iterations = 0
+        self.variant = variant
+        self._dcfr = variant == "dcfr"
+        # γ defaults per variant: 2 for DCFR, 1 for CFR+ — so ``variant="cfr+"``
+        # with no other arguments reproduces the pre-DCFR trainer exactly.
+        self.alpha, self.beta = alpha, beta
+        self.gamma = gamma if gamma is not None else (2.0 if self._dcfr else 1.0)
+        # Cumulative log-discounts: _lpos[n] = sum_{s=1..n} log(s**α / (s**α+1)),
+        # and likewise _lneg with β.  A node last updated at t0 and revisited at
+        # t catches up with exp(_lpos[t-1] - _lpos[t0-1]).  Logs (rather than
+        # running products) keep the β=0 case — which halves every iteration —
+        # from underflowing to a denormal.
+        self._lpos: List[float] = [0.0]
+        self._lneg: List[float] = [0.0]
+
+    def _extend_discounts(self, upto: int) -> None:
+        """Grow the cumulative log-discount tables to cover iteration ``upto``."""
+        a, b = self.alpha, self.beta
+        lp, ln = self._lpos, self._lneg
+        for s in range(len(lp), upto + 1):
+            sa = float(s) ** a
+            sb = float(s) ** b
+            lp.append(lp[s - 1] + math.log(sa / (sa + 1.0)))
+            ln.append(ln[s - 1] + math.log(sb / (sb + 1.0)))
 
     def run(self, iterations: int, rng: Optional[random.Random] = None) -> None:
         rng = rng or random.Random()
         ab = self.game.abstraction
         deal = self.game.deal
         root = self.tree.root
+        gamma = self.gamma
+        if self._dcfr:
+            self._extend_discounts(self.iterations + iterations)
         for _ in range(iterations):
             self.iterations += 1
+            t = self.iterations
+            # Polynomial averaging weight; γ=1 is the classic linear averaging.
+            w = float(t) if gamma == 1.0 else float(t) ** gamma
             hole, board = deal(rng)
-            self._cfr(root, 1.0, 1.0, float(self.iterations), hole, board,
-                      ab, {}, [None])
+            self._cfr(root, 1.0, 1.0, t, w, hole, board, ab, {}, [None])
 
-    def _cfr(self, nid, r0, r1, t, hole, board, ab, bucket_cache, sign):
+    def _cfr(self, nid, r0, r1, t, w, hole, board, ab, bucket_cache, sign):
         tree = self.tree
         kind = tree.kind[nid]
         if kind == FOLD_T:
@@ -126,8 +206,18 @@ class FastNLHECFR:
         ikey = (nid, bucket)
         node = self.nodes.get(ikey)
         if node is None:
-            node = _Node(tree.dec_actions[nid])
+            node = (_DNode if self._dcfr else _Node)(tree.dec_actions[nid])
             self.nodes[ikey] = node
+        rs = node.regret_sum
+        if self._dcfr:
+            # Catch up on the discounts missed since this node was last updated.
+            t0 = node.last
+            if t0 and t0 < t:
+                fpos = math.exp(self._lpos[t - 1] - self._lpos[t0 - 1])
+                fneg = math.exp(self._lneg[t - 1] - self._lneg[t0 - 1])
+                for i in range(len(rs)):
+                    rs[i] *= fpos if rs[i] > 0.0 else fneg
+            node.last = t
         strat = node.strategy()
         children = tree.dec_children[nid]
         n = len(children)
@@ -138,30 +228,32 @@ class FastNLHECFR:
         for i in range(n):
             si = strat[i]
             if player == 0:
-                c0, c1 = self._cfr(children[i], r0 * si, r1, t, hole, board,
+                c0, c1 = self._cfr(children[i], r0 * si, r1, t, w, hole, board,
                                    ab, bucket_cache, sign)
             else:
-                c0, c1 = self._cfr(children[i], r0, r1 * si, t, hole, board,
+                c0, c1 = self._cfr(children[i], r0, r1 * si, t, w, hole, board,
                                    ab, bucket_cache, sign)
             util0[i] = c0
             util1[i] = c1
             nv0 += si * c0
             nv1 += si * c1
 
-        rs = node.regret_sum
         ss = node.strategy_sum
-        if player == 0:
-            cf = r1
+        util = util0 if player == 0 else util1
+        nv = nv0 if player == 0 else nv1
+        cf = r1 if player == 0 else r0
+        own = r0 if player == 0 else r1
+        if self._dcfr:
+            # DCFR keeps negative regrets (discounted by β) rather than
+            # flooring them at zero the way regret-matching-plus does.
             for i in range(n):
-                v = rs[i] + cf * (util0[i] - nv0)
-                rs[i] = v if v > 0.0 else 0.0
-                ss[i] += t * r0 * strat[i]
+                rs[i] += cf * (util[i] - nv)
+                ss[i] += w * own * strat[i]
         else:
-            cf = r0
             for i in range(n):
-                v = rs[i] + cf * (util1[i] - nv1)
+                v = rs[i] + cf * (util[i] - nv)
                 rs[i] = v if v > 0.0 else 0.0
-                ss[i] += t * r1 * strat[i]
+                ss[i] += w * own * strat[i]
         return nv0, nv1
 
     def average_strategy(self) -> TabularStrategy:

@@ -73,3 +73,68 @@ def test_exploiter_crushes_always_call():
     br = StrategyAgent(ex.average_strategy(), "BR")
     r = play_directional(g, br, CallStationAgent(), 8000, seed=3)
     assert r.bb_per_100 > 100.0       # value-betting relentlessly wins big
+
+
+class _NaiveDCFR(FastNLHECFR):
+    """Reference DCFR that discounts **every** node after **every** iteration.
+
+    The shipped trainer instead defers each node's discount until the node is
+    next visited (see ``_DNode``).  This reference exists to pin that the two
+    are numerically identical, not to be fast.
+    """
+
+    def run(self, iterations, rng=None):
+        rng = rng or random.Random()
+        ab = self.game.abstraction
+        for _ in range(iterations):
+            self.iterations += 1
+            t = self.iterations
+            w = float(t) ** self.gamma
+            hole, board = self.game.deal(rng)
+            self._cfr(self.tree.root, 1.0, 1.0, t, w, hole, board, ab, {}, [None])
+            ta, tb = float(t) ** self.alpha, float(t) ** self.beta
+            fpos, fneg = ta / (ta + 1.0), tb / (tb + 1.0)
+            for node in self.nodes.values():
+                rs = node.regret_sum
+                for i in range(len(rs)):
+                    rs[i] *= fpos if rs[i] > 0.0 else fneg
+                # Discounts through iteration t are now applied, so the lazy
+                # catch-up in ``_cfr`` must be a no-op on the next visit.
+                node.last = t + 1
+
+
+def test_lazy_discounting_matches_naive_dcfr():
+    """Deferred per-node discounting == discounting the whole table each pass."""
+    g = _game()
+    lazy = FastNLHECFR(g, variant="dcfr")
+    lazy.run(400, random.Random(3))
+    naive = _NaiveDCFR(g, variant="dcfr")
+    naive.run(400, random.Random(3))
+
+    a, b = lazy.average_strategy().table, naive.average_strategy().table
+    assert set(a) == set(b) and a
+    for key, probs in a.items():
+        for action, p in probs.items():
+            assert abs(p - b[key][action]) < 1e-9, (key, action)
+
+
+def test_cfrplus_variant_floors_negative_regrets():
+    """``variant="cfr+"`` keeps regret-matching-plus (the pre-DCFR rule)."""
+    g = _game()
+    s = FastNLHECFR(g, variant="cfr+")
+    s.run(300, random.Random(0))
+    assert all(r >= 0.0 for node in s.nodes.values() for r in node.regret_sum)
+    # DCFR, by contrast, keeps (discounted) negative regrets around.
+    d = FastNLHECFR(g, variant="dcfr")
+    d.run(300, random.Random(0))
+    assert any(r < 0.0 for node in d.nodes.values() for r in node.regret_sum)
+
+
+def test_dcfr_trained_bot_beats_baselines():
+    g = _game()
+    s = FastNLHECFR(g, variant="dcfr")
+    s.run(20000, random.Random(1))
+    bot = StrategyAgent(s.average_strategy(), "bot")
+    for opp in (RandomAgent(), CallStationAgent()):
+        res = play_match(g, bot, opp, num_pairs=1500, seed=7)
+        assert res.bb_per_100 > 0, opp.name
