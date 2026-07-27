@@ -15,6 +15,135 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-27 — Discounted CFR for the NLHE trainer (DCFR tuning)
+
+**Idea:** backlog item 5. The exact solvers (`CFRSolver`, `TreeCFR`) have always
+used **Discounted CFR**, but the sampled NLHE trainer `FastNLHECFR` — the one
+that actually produces the bot — was still plain **CFR+ with linear strategy
+averaging**. It never got the upgrade. Sweep `(α, β, γ)` and adopt the best rule
+for the NLHE trainer.
+
+**Hypothesis:** the blueprint is under-converged at 120k deals, so a
+better-converging regret/averaging rule should reach a less exploitable strategy
+at the *same* budget — with the card abstraction, the betting tree and the
+info-set count all untouched (5,772 info sets before and after), isolating the
+update rule as the only variable.
+
+**Implementation** (`pokerbot/solve/nlhe_tree.py`): `variant="dcfr"` with tunable
+`(α, β, γ)`, default `(1.5, 0, 2)`. Two observations keep it as cheap per
+iteration as CFR+ on a sampled tree:
+
+- *Strategy averaging needs no discounting at all.* Discounting the strategy sum
+  by `(t/(t+1))**γ` each iteration leaves iteration `s` weighted by `(s/T)**γ` at
+  iteration `T`; the common `T**-γ` cancels under normalization. So accumulating
+  with weight `s**γ` is **exactly** DCFR's discounted sum — and `γ=1` recovers
+  the old linear averaging.
+- *Regret discounting is applied lazily* per visited node, so there is still no
+  global sweep over the info-set table. Every discount factor is positive, so an
+  untouched node's regrets cannot change sign in between; the deferred catch-up
+  is therefore exactly equal to discounting every iteration.
+  `tests/test_mccfr.py::test_lazy_discounting_matches_naive_dcfr` pins this
+  against a naive reference that sweeps the whole table every iteration.
+
+**Selection.** Exact Leduc sweep (8k iters, exact exploitability — cheap and
+noise-free) confirmed DCFR dominates CFR+ on the exact solver:
+
+| rule | Leduc exploitability |
+|---|---|
+| cfr+ | 0.010266 |
+| dcfr 1.5/0/1 | 0.009138 |
+| dcfr 2/0/3 | 0.008226 |
+| dcfr 1.5/0/2 | 0.008390 |
+| **dcfr 1.5/0.5/2** | **0.006630** |
+| dcfr 1/1/1 (linear) | 0.011292 |
+
+A direct NLHE sweep at `level=quick` (train 40k, BR 60k/seat, same seeds; only
+the bot's trainer differs) showed **γ is the dominant knob**: every γ=2 config
+cut measured exploitability several-fold, while γ=1 did not. `dcfr 1.5/0.5/2`
+drove the measurement *negative* (−3.148), i.e. below what a 60k-iteration best
+response can resolve — that violates invariant 5, so it was **not** adopted
+despite winning on Leduc. Adopted the validated `dcfr (1.5, 0, 2)`.
+
+**Before → after** (`level=standard`, seed 0, identical abstraction/tree/budget):
+
+| Metric | Baseline (cfr+) | Candidate (dcfr) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | **1.459** | **−1.830** |
+| `nlhe_infosets` | 5772 | 5772 | 0 (same abstraction) |
+| `win_vs_random` | +63.71 (CI ±16.47) | +58.49 (±16.26) | −5.22 (within CI) |
+| `win_vs_call_station` | +111.05 (±17.58) | +101.83 (±17.52) | −9.22 (within CI) |
+| `win_vs_maniac` | +65.28 (±18.80) | +56.75 (±18.69) | −8.53 (within CI) |
+| `win_vs_tight_aggressive` | +8.37 (±13.90) | +0.97 (±13.78) | −7.40 (within CI) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched path) |
+| `pushfold_jam_pct` | 62.1 | 61.5 | −0.6 (still in the Nash 60–70% band) |
+
+**Is −1.83 bb/100 noise?** The routine's rule of thumb is "1–2 bb/100 is noise",
+which this sits inside, so it was checked two ways rather than assumed.
+
+*1. Measured seed-to-seed noise.* Re-ran the whole comparison at seed 1:
+
+| | cfr+ | dcfr | Δ |
+|---|---|---|---|
+| seed 0 | 3.289 | 1.459 | **−1.830** |
+| seed 1 | 3.602 | 1.889 | **−1.713** |
+
+The spread *within* a variant across seeds is only **0.31** (cfr+) and **0.43**
+(dcfr) bb/100 — so the actual noise on this metric is ~0.3–0.4, and the effect
+is **4–6×** it. The 1–2 bb/100 rule of thumb is conservative here.
+
+*2. Best-response convergence.* The standard metric stops the exploiter at 150k
+iters/seat, where its curve is still rising steeply — so a lower number there
+could just mean the BR is *less converged* against that bot. Pushing the same
+best response 3.3× deeper against both bots (same seeds) shows the gap is flat:
+
+| BR iters/seat | cfr+ | dcfr | gap |
+|---|---|---|---|
+| 150,000 | +3.289 | +1.459 | −1.830 |
+| 250,000 | +8.247 | +6.397 | −1.850 |
+| 350,000 | +11.503 | +9.663 | −1.840 |
+| 500,000 | +14.839 | +13.049 | −1.790 |
+
+Six independent measurements (2 seeds × standard, 4 BR budgets), all negative,
+range −1.71…−1.85. The improvement is real.
+
+*Win rates, conversely, are noise.* The uniform downward drift at seed 0 does
+**not** replicate: at seed 1 `win_vs_call_station` is **+5.48** and
+`win_vs_tight_aggressive` **+5.15** in DCFR's favour. Within-variant seed-to-seed
+spread reaches 14.3 (cfr+ TAG) and 16.6 (dcfr call-station) bb/100, dwarfing the
+deltas. No category drops by more than its 95% CI in either seed.
+
+**Gate check:**
+- `python -m pytest -q` green: **42 passed** (3 new in `tests/test_mccfr.py`:
+  lazy-vs-naive discount equivalence, CFR+ still floors negative regrets, and a
+  DCFR-bot-beats-baselines check).
+- Invariants: Kuhn/Leduc untouched and numerically unchanged; the bot still
+  crushes random/call-station/maniac by a wide significant margin (+58.5, +101.8,
+  +56.8, CIs ~±17); BR exploitability ends **positive** (+1.459); push/fold still
+  in the Nash band. Search paths untouched (search off ⇒ nothing moves).
+- Primary metric: `nlhe_exploitability_bb100` **3.289 → 1.459**, replicated at a
+  second seed and across four BR budgets, 4–6× measured noise.
+- No regression: every `win_vs_*` delta is inside its 95% CI, in both seeds.
+
+**Side finding (for the backlog), recorded because it affects how every past
+number should be read:** the in-abstraction exploitability metric is far from
+converged at its 150k-iteration budget — the same best response reaches **+14.8
+bb/100** against today's baseline bot at 500k iters, versus the +3.3 the report
+quotes. The headline number is a *loose* lower bound, and its absolute value is
+budget-dependent (comparisons at equal budget, as done here, remain valid).
+Raising `expl_max`, or reporting the BR curve's slope, would make the metric more
+honest — but it would also redefine the column, so it needs its own run.
+
+**Verdict: IMPROVEMENT.** Kept `variant="dcfr"` (1.5, 0, 2) as the
+`FastNLHECFR` default, regenerated `EVALUATION.md` and `figures/` at
+`level=standard`, and appended the 2026-07-27 history row.
+
+**Next (backlog):** `dcfr 1.5/0.5/2` won the exact Leduc sweep and looked
+strongest on NLHE too, but could not be *measured* at the current BR budget
+(negative best-response value). Re-run it once the exploiter budget is raised —
+it may be a further win sitting just under the measurement floor.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop

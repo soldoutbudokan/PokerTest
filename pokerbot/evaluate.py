@@ -158,10 +158,13 @@ def section_nlhe(rep: Report, train_iters: int, eval_pairs: int,
     trainer = FastNLHECFR(g, tree)
     trainer.run(train_iters, rng)
     bot = trainer.average_strategy()
+    rule = (f"Discounted CFR (α={trainer.alpha:g}, β={trainer.beta:g}, "
+            f"γ={trainer.gamma:g})" if trainer.variant == "dcfr"
+            else "CFR+ with linear averaging")
     rep.add(f"**Setup**: heads-up, 20 BB effective, pot-sized bets + all-in, "
             f"made-hand-strength card abstraction (169 pre-flop + 8 post-flop "
-            f"buckets/street). Trained with chance-sampling MCCFR for "
-            f"**{train_iters:,} deals** "
+            f"buckets/street). Trained with chance-sampling MCCFR "
+            f"[{rule}] for **{train_iters:,} deals** "
             f"({len(trainer.nodes):,} info sets, {time.time() - t0:.0f}s).")
     rep.add()
     bot_agent = StrategyAgent(bot, "cfr-bot")

@@ -16,7 +16,7 @@ comparison to published theory.
 | Hand evaluator | `pokerbot/evaluator.py` | Exact 5–7 card evaluator (Cactus-Kev-style lookup tables), validated against textbook hand frequencies. |
 | Extensive-form games | `pokerbot/games/` | Kuhn, Leduc, and heads-up No-Limit Hold'em behind one interface. |
 | Solvers | `pokerbot/solve/cfr.py`, `tree.py` | Vanilla CFR, CFR+, **Discounted CFR**; exact best-response / exploitability. |
-| Monte-Carlo CFR | `pokerbot/solve/mccfr.py`, `nlhe_tree.py` | Chance-sampling MCCFR for NLHE over a compiled betting tree (fast). |
+| Monte-Carlo CFR | `pokerbot/solve/mccfr.py`, `nlhe_tree.py` | Chance-sampling MCCFR for NLHE over a compiled betting tree (fast); CFR+ or **Discounted CFR** update rule. |
 | Real-time search | `pokerbot/solve/subgame.py` | River **subgame re-solving** (endgame search): re-solves the last street at exact-strength granularity from the blueprint-implied range. |
 | Agents | `pokerbot/agents/` | The trained bot (`StrategyAgent`), the search bot (`SearchAgent`), plus a panel of baselines. |
 | Evaluation | `pokerbot/eval/` | Mirrored-deal arena (mbb/100 + 95% CIs), best-response exploitability. |
@@ -89,9 +89,15 @@ figure, and the report all change).
 
 ## Method notes
 
-- **Discounted CFR (DCFR)** is the default solver: positive/negative regrets and
-  the average-strategy weights get separate polynomial discounts, which
-  outperforms vanilla CFR on Leduc-scale games.
+- **Discounted CFR (DCFR)** is the default solver everywhere — the exact
+  Kuhn/Leduc solvers and, since 2026-07-27, the sampled NLHE trainer: positive
+  regrets, negative regrets and the average-strategy weights get separate
+  polynomial discounts `(α, β, γ) = (1.5, 0, 2)`. It outperforms vanilla CFR and
+  CFR+ on Leduc-scale games, and on NLHE it reaches a blueprint ~1.8 bb/100 less
+  exploitable at the same training budget. On the sampled tree the discounts are
+  applied *lazily* per visited information set (and the strategy sum is
+  accumulated with weight `t**γ`, which is algebraically the same thing), so
+  there is no per-iteration sweep over the info-set table.
 - The NLHE bot uses an **action abstraction** (pot-sized bet + all-in) and a
   **card abstraction** (lossless 169 pre-flop hands + made-hand-strength buckets
   post-flop). The post-flop abstraction ignores draw potential — a documented

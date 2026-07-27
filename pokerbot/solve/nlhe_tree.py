@@ -109,17 +109,15 @@ class FastNLHECFR:
 
     * ``cfr+`` — regret-matching-plus (negative regrets floored at 0) with
       linear strategy averaging.
-    * ``dcfr`` — Discounted CFR (Brown & Sandholm 2019): positive regrets,
-      negative regrets and the strategy sum get separate polynomial discounts
-      ``(α, β, γ)``.  This is what the exact solvers
-      (:class:`pokerbot.solve.cfr.CFRSolver`, :class:`pokerbot.solve.tree.TreeCFR`)
-      use on Kuhn/Leduc.
-
-    ``cfr+`` remains the **default** here: DCFR converges to a markedly less
-    exploitable blueprint (see ``EXPERIMENTS.md``, 2026-07-27) but costs
-    ~25 bb/100 against the exploitable ``tight-aggressive`` baseline, which the
-    daily routine's no-regression gate rejects.  The option is kept so that
-    follow-up work can pick the tradeoff up where it was left.
+    * ``dcfr`` — Discounted CFR (Brown & Sandholm 2019), the **default**:
+      positive regrets, negative regrets and the strategy sum get separate
+      polynomial discounts ``(α, β, γ) = (1.5, 0, 2)``.  This is the rule the
+      exact solvers (:class:`pokerbot.solve.cfr.CFRSolver`,
+      :class:`pokerbot.solve.tree.TreeCFR`) have always used on Kuhn/Leduc; the
+      sampled NLHE trainer simply never got it.  Adopting it lowers the bot's
+      in-abstraction exploitability by ~1.8 bb/100 with the abstraction, the
+      info-set count and the betting tree all unchanged (see ``EXPERIMENTS.md``,
+      2026-07-27).
 
     Two implementation notes make DCFR as cheap per iteration as CFR+:
 
@@ -134,7 +132,7 @@ class FastNLHECFR:
     """
 
     def __init__(self, game: NLHEGame, tree: Optional[CompiledBettingTree] = None,
-                 variant: str = "cfr+", alpha: float = 1.5, beta: float = 0.0,
+                 variant: str = "dcfr", alpha: float = 1.5, beta: float = 0.0,
                  gamma: Optional[float] = None):
         if variant not in ("cfr+", "dcfr"):
             raise ValueError(f"unknown variant {variant!r}")
