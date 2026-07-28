@@ -59,6 +59,49 @@ def test_trained_bot_beats_random_and_callstation():
         assert res.bb_per_100 > 0, opp.name
 
 
+def test_lazy_regret_weight_matches_dcfr_discount():
+    """The lazy weight must be the exact inverse of DCFR's positive-regret
+    discount, i.e. w_T * prod_{t<=T} t^a/(t^a+1) == 1."""
+    g = _game()
+    for alpha in (1.0, 1.5, 3.0):
+        s = FastNLHECFR(g, alpha=alpha, gamma=2.0)
+        s.run(200, random.Random(0))
+        prod = 1.0
+        for t in range(1, s.iterations + 1):
+            ta = float(t) ** alpha
+            prod *= ta / (ta + 1.0)
+        assert abs(s._regret_weight * prod - 1.0) < 1e-9, alpha
+
+
+def test_undiscounted_trainer_is_plain_cfr_plus():
+    """alpha=None/gamma=1 must leave the CFR+ updates numerically untouched."""
+    g = _game()
+    s = FastNLHECFR(g, alpha=None, gamma=1.0)
+    s.run(500, random.Random(0))
+    assert s._regret_weight == 1.0
+    # Same seed, same trainer settings -> identical strategy (determinism).
+    s2 = FastNLHECFR(g, alpha=None, gamma=1.0)
+    s2.run(500, random.Random(0))
+    assert s.average_strategy().table == s2.average_strategy().table
+
+
+def test_alpha_below_one_is_rejected():
+    """w_t would grow like exp(t^(1-alpha)) and overflow."""
+    import pytest
+    with pytest.raises(ValueError):
+        FastNLHECFR(_game(), alpha=0.5)
+
+
+def test_discounted_trainer_beats_baselines():
+    g = _game()
+    s = FastNLHECFR(g, alpha=1.5, gamma=2.0)
+    s.run(20000, random.Random(1))
+    bot = StrategyAgent(s.average_strategy(), "bot")
+    for opp in (RandomAgent(), CallStationAgent()):
+        res = play_match(g, bot, opp, num_pairs=1500, seed=7)
+        assert res.bb_per_100 > 0, opp.name
+
+
 def test_exploiter_crushes_always_call():
     """A best response must strongly beat a trivially exploitable strategy."""
     from pokerbot.eval.arena import play_directional

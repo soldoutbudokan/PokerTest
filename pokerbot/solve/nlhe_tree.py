@@ -83,26 +83,67 @@ class CompiledBettingTree:
 
 
 class FastNLHECFR:
-    """Chance-sampling CFR+ over the compiled betting tree."""
+    """Chance-sampling CFR+ / Discounted-CFR over the compiled betting tree.
 
-    def __init__(self, game: NLHEGame, tree: Optional[CompiledBettingTree] = None):
+    ``alpha`` and ``gamma`` are the Discounted-CFR (Brown & Sandholm 2019)
+    discount exponents for the *positive regrets* and the *average-strategy
+    sum*.  DCFR normally applies them as a global sweep over every information
+    set once per iteration — far too expensive here, where the table has
+    thousands of sampled nodes and each iteration touches only a handful.  They
+    are therefore applied **lazily and exactly**, as per-iteration weights on the
+    increments:
+
+    * discounting the accumulated regret by ``f_s = s^α/(s^α+1)`` after every
+      iteration ``s`` is equivalent to leaving it undiscounted and weighting
+      iteration ``t``'s increment by ``w_t = Π_{s≤t} (1 + s^-α) = 1/Π_{s≤t} f_s``
+      — the two accumulators differ only by the positive global factor
+      ``Π f_s``, which cancels in regret matching (and commutes with the
+      regret-matching-plus floor, since it is a positive scalar);
+    * discounting the strategy sum by ``(s/(s+1))^γ`` telescopes to a weight of
+      ``t^γ`` on iteration ``t``'s increment.
+
+    ``beta`` (the negative-regret discount) has no lazy analogue and is not
+    needed: regrets here are floored at 0 on every visit (regret-matching-plus),
+    which is the ``β → -inf`` limit — and under sampling, where a node is visited
+    on a small fraction of iterations, DCFR's ``β = 0`` (halve per iteration)
+    decays a negative regret to ~0 between visits anyway.
+
+    The defaults are DCFR's ``(α, γ) = (1.5, 2)``; ``alpha=None`` (no
+    positive-regret discount) with ``gamma=1.0`` (linear averaging) reproduces
+    the plain CFR+ updates exactly.  ``alpha`` below 1 is rejected: ``w_t`` then
+    grows like ``exp(t^(1-α))`` and overflows.
+    """
+
+    def __init__(self, game: NLHEGame, tree: Optional[CompiledBettingTree] = None,
+                 alpha: Optional[float] = 1.5, gamma: float = 2.0):
+        if alpha is not None and alpha < 1.0:
+            raise ValueError("alpha must be >= 1 (or None); smaller exponents "
+                             "make the lazy regret weight overflow")
         self.game = game
         self.tree = tree or CompiledBettingTree.build(game)
         self.nodes: Dict[Tuple[int, object], _Node] = {}
         self.iterations = 0
+        self.alpha = alpha
+        self.gamma = gamma
+        self._regret_weight = 1.0
 
     def run(self, iterations: int, rng: Optional[random.Random] = None) -> None:
         rng = rng or random.Random()
         ab = self.game.abstraction
         deal = self.game.deal
         root = self.tree.root
+        alpha, gamma = self.alpha, self.gamma
         for _ in range(iterations):
             self.iterations += 1
+            t = float(self.iterations)
+            if alpha is not None:
+                self._regret_weight *= 1.0 + t ** -alpha
             hole, board = deal(rng)
-            self._cfr(root, 1.0, 1.0, float(self.iterations), hole, board,
-                      ab, {}, [None])
+            self._cfr(root, 1.0, 1.0, t if gamma == 1.0 else t ** gamma,
+                      hole, board, ab, {}, [None], self._regret_weight)
 
-    def _cfr(self, nid, r0, r1, t, hole, board, ab, bucket_cache, sign):
+    def _cfr(self, nid, r0, r1, ws, hole, board, ab, bucket_cache, sign, wr):
+        """``ws``/``wr`` are this iteration's strategy-sum and regret weights."""
         tree = self.tree
         kind = tree.kind[nid]
         if kind == FOLD_T:
@@ -138,11 +179,11 @@ class FastNLHECFR:
         for i in range(n):
             si = strat[i]
             if player == 0:
-                c0, c1 = self._cfr(children[i], r0 * si, r1, t, hole, board,
-                                   ab, bucket_cache, sign)
+                c0, c1 = self._cfr(children[i], r0 * si, r1, ws, hole, board,
+                                   ab, bucket_cache, sign, wr)
             else:
-                c0, c1 = self._cfr(children[i], r0, r1 * si, t, hole, board,
-                                   ab, bucket_cache, sign)
+                c0, c1 = self._cfr(children[i], r0, r1 * si, ws, hole, board,
+                                   ab, bucket_cache, sign, wr)
             util0[i] = c0
             util1[i] = c1
             nv0 += si * c0
@@ -151,17 +192,17 @@ class FastNLHECFR:
         rs = node.regret_sum
         ss = node.strategy_sum
         if player == 0:
-            cf = r1
+            cf = wr * r1
             for i in range(n):
                 v = rs[i] + cf * (util0[i] - nv0)
                 rs[i] = v if v > 0.0 else 0.0
-                ss[i] += t * r0 * strat[i]
+                ss[i] += ws * r0 * strat[i]
         else:
-            cf = r0
+            cf = wr * r0
             for i in range(n):
                 v = rs[i] + cf * (util1[i] - nv1)
                 rs[i] = v if v > 0.0 else 0.0
-                ss[i] += t * r1 * strat[i]
+                ss[i] += ws * r1 * strat[i]
         return nv0, nv1
 
     def average_strategy(self) -> TabularStrategy:

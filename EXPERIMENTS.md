@@ -15,6 +15,146 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-28 — Discounted CFR (α, γ) in the NLHE MCCFR trainer
+
+**Idea:** backlog item 5 — sweep DCFR's discount exponents and adopt the best
+for the NLHE trainer. `FastNLHECFR` was plain **CFR+**: regrets floored at 0,
+strategy sum accumulated with linear (`t`) weights. DCFR (Brown & Sandholm
+2019) instead discounts positive regrets by `s^α/(s^α+1)` and the strategy sum
+by `(s/(s+1))^γ` each iteration.
+
+**How it's applied (lazily, and exactly).** DCFR discounts by sweeping *every*
+information set once per iteration; here the table has thousands of sampled
+nodes and one iteration touches a handful, so a sweep is unaffordable. Both
+discounts are instead folded into **per-iteration weights on the increments**,
+which is algebraically identical:
+
+- discounting accumulated regret by `f_s = s^α/(s^α+1)` after every iteration
+  leaves `R_T = (Π_{s≤T} f_s) · Σ_t inc_t · w_t` with `w_t = Π_{s≤t}(1+s^-α)`;
+  the two accumulators differ only by a positive global factor, which cancels in
+  regret matching and commutes with the regret-matching-plus floor. `w_t` is
+  maintained as one running scalar (`_regret_weight`), so the cost is one
+  multiply per iteration.
+- the strategy-sum discount `(s/(s+1))^γ` telescopes to a weight of `t^γ` on
+  iteration `t` — the existing code was already this with γ=1.
+
+DCFR's `β` (negative-regret discount) has no lazy analogue and isn't needed: the
+plus-floor is the `β → -inf` limit, and under sampling `β=0` decays a negative
+regret to ~0 between a node's visits anyway. `alpha < 1` is rejected (`w_t`
+would grow like `exp(t^(1-α))` and overflow). `alpha=None, gamma=1.0` reproduces
+the previous CFR+ trainer **bit-for-bit** (verified against `HEAD`: 5,772 keys,
+max abs diff 0.0).
+
+**Selection (before touching the NLHE numbers).** Two Leduc sweeps at 20k
+iterations with *exact* exploitability:
+
+1. Full DCFR `(α, β, γ)`, 25 configs. Best: `(3, 0.5, 3)` 0.003950, `(1.5, 0.5,
+   3)` 0.004013 — every top config uses **β=0.5**, which the sampled floor
+   cannot express (noted as backlog below). Repo default `(1.5, 0, 2)` 0.006309;
+   CFR+ 0.006763.
+2. The **floor scheme actually used by the trainer** (plus-floor + α + γ), 15
+   configs — this one transfers as-is. γ dominates and α=1 is harmful:
+
+   | α \ γ | 1 | 2 | 3 |
+   |---|---|---|---|
+   | None | 0.006763 | 0.006184 | 0.005913 |
+   | 1.0 | 0.010817 | 0.009976 | 0.009546 |
+   | **1.5** | 0.006679 | 0.006118 | **0.005859** |
+   | 2.0 | 0.006798 | 0.006295 | 0.006037 |
+   | 3.0 | 0.006748 | 0.006200 | 0.005927 |
+
+   (`α=None, γ=1` reproduces `TreeCFR`'s `cfr+` exactly — a check on the harness.)
+
+Then a quick-level NLHE screen (same seeds/budgets, only the trainer differs)
+decomposed the two knobs — γ is the whole effect:
+
+| trainer | expl. bb/100 | random | call-station | maniac | TAG |
+|---|---|---|---|---|---|
+| CFR+ (None, 1) | 2.895 | +83.9 | +83.2 | +78.6 | +5.4 |
+| α only (1.5, 1) | 3.241 | +82.0 | +106.1 | +97.9 | −15.1 |
+| γ only (None, 2) | 0.098 | +91.0 | +129.6 | +71.3 | −31.0 |
+| DCFR (1.5, 2) | 0.431 | +67.0 | +124.1 | +89.8 | −14.4 |
+
+Adopted the canonical DCFR pair **(α, γ) = (1.5, 2)** as the `FastNLHECFR`
+default (best of the two γ=2 screens on the panel, top-5 on the Leduc floor
+sweep). `metrics.py`/`evaluate.py` needed no change — they construct
+`FastNLHECFR` with defaults.
+
+**Before → after** (`level=standard`, seed 0 — the committed row):
+
+| Metric | Baseline (CFR+) | Candidate (DCFR) | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | **1.513** | **−1.776** |
+| `win_vs_random` | +63.71 ±16.47 | +52.01 ±16.48 | −11.70 (within CI) |
+| `win_vs_call_station` | +111.05 ±17.58 | +111.98 ±17.63 | +0.93 |
+| `win_vs_maniac` | +65.28 ±18.80 | +56.80 ±18.73 | −8.48 (within CI) |
+| `win_vs_tight_aggressive` | +8.37 ±13.90 | −0.57 ±13.92 | −8.94 (within CI) |
+| `nlhe_infosets` | 5,772 | 5,772 | 0 (abstraction untouched) |
+| `pushfold_jam_pct` | 62.1 | 61.5 | −0.6 (still in the 60–70% Nash band) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched code paths) |
+
+**Replication (the reason this is a keep, not a shrug).** −1.78 bb/100 sits at
+the edge of the routine's stated 1–2 bb/100 noise band, so both arms were re-run
+at an independent seed (`seed=1`, standard, same budgets):
+
+| Metric | Δ at seed 0 | Δ at seed 1 |
+|---|---|---|
+| `nlhe_exploitability_bb100` | −1.776 (3.289→1.513) | **−1.904** (3.602→1.698) |
+| `win_vs_random` | −11.70 | **+15.02** |
+| `win_vs_call_station` | +0.93 | −2.75 |
+| `win_vs_maniac` | −8.48 | +3.31 |
+| `win_vs_tight_aggressive` | −8.94 | **+11.22** |
+
+The exploitability gain reproduces almost exactly (−1.78, −1.90) while every
+win-rate delta **flips sign** between seeds (mean over the two seeds: random
++1.7, call-station −0.9, maniac −2.6, TAG +1.1). So the win-rate movements are
+seed noise, and the primary-metric drop is not. The same direction shows up at
+the quick level (−2.46) and in the *exact*, noise-free Leduc computation — three
+independent measurements, one deterministic.
+
+**Gate check:**
+- `python -m pytest -q` green: **43 passed** (4 new in `tests/test_mccfr.py`:
+  the lazy weight equals the closed-form DCFR discount to 1e-9 for α∈{1,1.5,3},
+  `alpha=None/gamma=1` leaves the accumulators untouched and is deterministic,
+  `alpha<1` raises, and a DCFR-trained bot still beats random/call-station).
+- Invariants: Kuhn value −0.05557 and exploitability 0.002265 unchanged; Leduc
+  0.0046 unchanged; bot still beats random/call-station/maniac significantly;
+  best-response exploitability ends **positive** at both seeds (1.513, 1.698);
+  jam range 61.5% still inside Nash's 60–70%; search-off reproduction
+  (invariant 6) still pinned by `tests/test_subgame.py`.
+- Primary metric: exploitability 3.289 → 1.513 bb/100, replicated at a second
+  seed (3.602 → 1.698). Beyond noise.
+- No regression: no `win_vs_*` category drops by more than its 95% CI at either
+  seed, and the deltas average to ≈0 across the two.
+
+**Caveats / backlog:**
+- The best Leduc configs all used **β=0.5**, i.e. *keeping* discounted negative
+  regret rather than flooring it. Expressing β under sampling needs per-node
+  last-visit bookkeeping (a sign-dependent discount can't be folded into a
+  scalar increment weight) — that's the natural follow-up, and Leduc says it is
+  worth ~30% more exploitability reduction there.
+- The exploiter is fixed-budget (150k/seat) and in-abstraction, so "less
+  exploitable" means "less exploitable by an equally-budgeted bucketed BR". A
+  strategy that is merely *harder to search against* would look the same; the
+  Leduc exact result is the guard against that reading.
+- `EVALUATION.md`'s section 4b trains its BR on a *smaller* budget than
+  `metrics.py` (120k iters/40k eval vs 150k/50k), where the BR is still
+  under-converged and the number is negative for both bots: it moved −0.84 →
+  −2.51 bb/100. That is the same effect seen at every early milestone of the BR
+  curve (the under-trained exploiter loses more to the DCFR bot), not a second,
+  contradictory measurement — the converged, positive numbers are the ones the
+  invariant is judged on (1.513 at seed 0, 1.698 at seed 1). Raising the
+  report's 4b budget to where the BR converges is a cheap follow-up.
+- γ=3 edged out γ=2 on Leduc, but higher γ concentrates the average strategy on
+  the last few percent of MCCFR deals, which should raise variance in the
+  sampled setting. Untested here — one idea per run.
+
+**Verdict: IMPROVEMENT.** Kept: `FastNLHECFR` now defaults to DCFR
+`(α, γ) = (1.5, 2)`. Regenerated `EVALUATION.md` and `figures/` at
+`level=standard`.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop

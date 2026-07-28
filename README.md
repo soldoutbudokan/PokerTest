@@ -91,7 +91,12 @@ figure, and the report all change).
 
 - **Discounted CFR (DCFR)** is the default solver: positive/negative regrets and
   the average-strategy weights get separate polynomial discounts, which
-  outperforms vanilla CFR on Leduc-scale games.
+  outperforms vanilla CFR on Leduc-scale games. The NLHE Monte-Carlo trainer
+  uses the same `(α, γ) = (1.5, 2)` discounts, applied **lazily** as
+  per-iteration weights on the increments (algebraically identical to DCFR's
+  per-iteration sweep, but O(1) instead of O(information sets); see
+  `FastNLHECFR`). Its negative-regret rule stays regret-matching-plus, the
+  `β → -inf` limit.
 - The NLHE bot uses an **action abstraction** (pot-sized bet + all-in) and a
   **card abstraction** (lossless 169 pre-flop hands + made-hand-strength buckets
   post-flop). The post-flop abstraction ignores draw potential — a documented
