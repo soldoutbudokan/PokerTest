@@ -73,3 +73,51 @@ def test_exploiter_crushes_always_call():
     br = StrategyAgent(ex.average_strategy(), "BR")
     r = play_directional(g, br, CallStationAgent(), 8000, seed=3)
     assert r.bb_per_100 > 100.0       # value-betting relentlessly wins big
+
+
+def test_training_is_deterministic_for_a_fixed_seed():
+    """Same seed, same bot — the trainer must have no hidden state."""
+    g = _game()
+    a = FastNLHECFR(g)
+    a.run(1500, random.Random(0))
+    b = FastNLHECFR(g)
+    b.run(1500, random.Random(0))
+    ta, tb = a.average_strategy().table, b.average_strategy().table
+    assert ta.keys() == tb.keys()
+    assert all(ta[k] == tb[k] for k in ta)
+
+
+def test_gamma_weighting_matches_dcfr_strategy_discount():
+    """Accumulating ``t ** gamma`` must equal DCFR's iterative discount.
+
+    DCFR multiplies the running strategy sum by ``(t / (t + 1)) ** gamma``
+    after every iteration and adds the current strategy with weight 1.  The
+    trainer instead adds it with weight ``t ** gamma`` and never sweeps the
+    table; the two give the same *normalised* average.  ``gamma = 0`` makes
+    the trainer add weight 1, so it doubles as the reference implementation.
+
+    The strategy sum never feeds back into play (only regrets do, and those are
+    identical here), so both runs follow the same trajectory and this holds to
+    float precision rather than approximately.
+    """
+    g = _game()
+    tree = CompiledBettingTree.build(g)
+    for gamma in (1.0, 2.0, 3.0):
+        closed = FastNLHECFR(g, tree, gamma=gamma)
+        closed.run(300, random.Random(3))
+
+        ref = FastNLHECFR(g, tree, gamma=0.0)      # adds weight 1 per iteration
+        rng = random.Random(3)
+        for _ in range(300):
+            ref.run(1, rng)
+            f = (ref.iterations / (ref.iterations + 1.0)) ** gamma
+            for node in ref.nodes.values():
+                ss = node.strategy_sum
+                for i in range(len(ss)):
+                    ss[i] *= f
+
+        tc, tr = closed.average_strategy().table, ref.average_strategy().table
+        assert tc.keys() == tr.keys()
+        for k in tc:
+            for a_, p in tc[k].items():
+                assert abs(p - tr[k][a_]) < 1e-9, (gamma, k, a_, p, tr[k][a_])

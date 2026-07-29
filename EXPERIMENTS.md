@@ -15,6 +15,132 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-29 — DCFR strategy-averaging discount in the NLHE trainer
+
+**Idea:** backlog item 5 ("DCFR tuning"). The exact solvers (`CFRSolver`,
+`TreeCFR`) have run Discounted CFR since day 1, but the NLHE blueprint trainer
+`FastNLHECFR` was still plain **CFR+ with linear averaging** — every iteration's
+strategy entered the average with weight `t`. With chance sampling, the early
+iterations average over a handful of deals and are mostly sampling noise, so
+weighting late iterations more heavily should discard that noise. Added a
+`gamma` parameter: iteration `t` now contributes with weight `t ** gamma`.
+
+**Why the closed form is free.** DCFR multiplies the running strategy sum by
+`(t/(t+1)) ** gamma` each iteration and adds the current strategy with weight
+1; iteration `t`'s share of the final sum is then proportional to `t ** gamma`.
+Accumulating `t ** gamma` directly is the *same normalised average* with no
+per-iteration sweep over the (5,772-entry) information-set table — which is what
+made this affordable in pure Python. `tests/test_mccfr.py` pins the equivalence
+against the iterative formulation for `gamma` in (1, 2, 3).
+
+**Scope:** only the blueprint trainer changed. `FastExploiterCFR` — the best
+response that *measures* exploitability — was deliberately left on CFR+, so
+`nlhe_exploitability_bb100` is still produced by the same yardstick as every
+past row and the comparison stays honest.
+
+**Sweep (backlog said "sweep on Leduc"; swept on NLHE instead, which is the
+actual target).** Blueprint trained at the reduced `quick` NLHE budget (40k
+deals), exploitability measured with the unchanged exploiter, 2 seeds:
+
+| (alpha, gamma) | seed 0 | seed 1 | mean |
+|---|---|---|---|
+| (none, 1) — the committed bot | +2.895 | +2.225 | +2.560 |
+| (none, **2**) | +0.098 | −0.378 | −0.140 |
+| (1.5, 2) | +0.514 | −0.263 | +0.126 |
+| (1.5, 1) | +3.346 | +2.364 | +2.855 |
+| (3.0, 2) | +0.153 | −0.400 | −0.124 |
+| (1.5, 3) | −0.881 | −1.557 | −1.219 |
+
+`gamma` is the entire effect; the **regret** discount `alpha` was a wash (worse
+on one seed, better on the other) so it was **not adopted** — the prototype
+lazy-discount machinery was removed rather than carried as untested-by-benefit
+complexity. `gamma=3` scores lower still, but drives the measured value negative
+at this budget, which invariant 5 reads as an under-trained exploiter rather
+than a better bot; left in the backlog. Adopted the canonical DCFR
+**`gamma = 2`**.
+
+**Before → after** (`level=standard`, seed 0 — the row appended to
+`metrics_history.csv`):
+
+| Metric | Baseline | Candidate | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 3.289 | **1.543** | **−1.746** |
+| `win_vs_random` | +63.71 (CI ±16.47) | +67.40 (±16.20) | +3.69 |
+| `win_vs_call_station` | +111.05 (±17.58) | +107.57 (±17.68) | −3.48 |
+| `win_vs_maniac` | +65.28 (±18.80) | +60.08 (±18.61) | −5.20 |
+| `win_vs_tight_aggressive` | +8.37 (±13.90) | −2.44 (±13.79) | −10.81 (inside CI) |
+| `nlhe_infosets` | 5,772 | 5,772 | unchanged (abstraction untouched) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched code path) |
+| `pushfold_jam_pct` | 62.1 | 61.5 | −0.6 (still in the Nash 60–70% band) |
+
+**Is −1.75 signal or noise?** On its own it sits inside the routine's stated
+1–2 bb/100 noise band, so the run was repeated on a second independent seed at
+the same level. Four paired measurements:
+
+| | baseline | candidate | Δ |
+|---|---|---|---|
+| quick, seed 0 | +2.895 | +0.098 | −2.797 |
+| quick, seed 1 | +2.225 | −0.378 | −2.603 |
+| standard, seed 0 | +3.289 | +1.543 | −1.746 |
+| standard, seed 1 | +3.602 | +1.755 | −1.847 |
+
+The two `standard` deltas differ by 0.10 bb/100 against an effect of 1.8 — the
+noise band applies to a single measurement's wiggle, and the *difference* is
+reproducible far inside it. The whole best-response curve also shifts down, it
+does not cross: baseline `[-28.87, -17.97, -8.81, -0.99, +3.29]` vs candidate
+`[-30.08, -19.46, -10.52, -2.77, +1.54]` at 10k/25k/50k/100k/150k exploiter
+iterations.
+
+The seed-0 `win_vs_tight_aggressive` drop is noise, not a regression: on seed 1
+the same comparison is −5.97 → −5.78 (+0.19). The two seeds disagree in sign,
+and both moves are well inside the ±13.8 CI. Same for the other categories
+(random +3.69/−5.13, call-station −3.48/+2.47, maniac −5.20/+1.16 across the two
+seeds) — all sign-inconsistent and inside their CIs.
+
+**Gate check:**
+- `python -m pytest -q` green: **41 passed** (2 new in `tests/test_mccfr.py`:
+  the gamma/DCFR averaging equivalence, and fixed-seed determinism).
+- Invariants: Kuhn value −1/18 and exploitability unchanged; Leduc unchanged and
+  still decreasing; bot still beats random/call-station/maniac by a wide
+  **significant** margin on both seeds; best-response exploitability ends
+  **positive** on both seeds (+1.543, +1.755), so invariant 5 holds; the search
+  path is untouched and `tests/test_subgame.py` still passes.
+- Primary metric: `nlhe_exploitability_bb100` falls 3.289 → 1.543 (−1.746),
+  reproduced at −1.847 on an independent seed.
+- No regression: no `win_vs_*` category drops by more than its 95% CI on
+  either seed.
+
+**Caveats / honest limits:**
+- The best-response curve is still rising steeply at 150k iterations (−2.77 →
+  +1.54 over the last 50k), so neither number is a converged exploitability —
+  both are lower bounds at a *fixed exploiter budget*. The claim is therefore
+  "harder to exploit at equal exploiter effort", which is exactly what this
+  project's metric is defined to measure, but a longer exploiter would raise
+  both numbers and could narrow the gap.
+- While implementing this, the solver turned out to be **knife-edge sensitive**
+  to last-bit float rounding: a node whose regrets have decayed to ~1e-18 has
+  its regret-matching strategy decided by the final bit, so perturbing an
+  arithmetically-irrelevant constant by a relative 1e-15 changes the trained bot
+  on ~half of seeds. That is a property of the CFR+ zero-floor, it predates this
+  change, and it is why the new equivalence test is pinned over a short horizon.
+  Worth a future run: floor tiny residual regrets to exactly 0.
+- `EVALUATION.md` section 4b runs its **own**, shorter exploiter (120k
+  iterations/seat, not the 150k of the metrics curve) and reports a *negative*
+  number: −0.84 for the baseline, −2.52 now. That section was already negative
+  before this change, and the direction is what a harder-to-exploit bot
+  predicts — a fixed under-trained exploiter falls further behind. The gate's
+  metric (`nlhe_exploitability_bb100`, 150k) is positive on both seeds, so
+  invariant 5 holds where it is defined, but 4b's budget should be raised until
+  it converges; until then it is not a usable exploitability number.
+- `gamma=3` and a proper `alpha` sweep at a *converged* exploiter budget remain
+  open.
+
+**Verdict: IMPROVEMENT.** Kept `gamma=2` as the `FastNLHECFR` default,
+regenerated `EVALUATION.md` and `figures/` at `level=standard`, and committed to
+`main`.
+
+---
+
 ## 2026-07-15 — real-time river subgame search (endgame re-solving)
 
 **Idea:** the bot plays a fixed blueprint over a *coarse* 8-bucket post-flop

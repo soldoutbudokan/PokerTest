@@ -83,24 +83,48 @@ class CompiledBettingTree:
 
 
 class FastNLHECFR:
-    """Chance-sampling CFR+ over the compiled betting tree."""
+    """Chance-sampling CFR+ over the compiled betting tree, with **discounted
+    strategy averaging** (the ``gamma`` of Discounted CFR).
 
-    def __init__(self, game: NLHEGame, tree: Optional[CompiledBettingTree] = None):
+    The regret update is regret-matching-plus (negative regrets floored at 0).
+    The average strategy weights iteration ``t`` by ``t ** gamma``: multiplying
+    the running strategy sum by ``(t / (t + 1)) ** gamma`` each iteration and
+    adding the current strategy with weight 1 — DCFR's formulation — makes
+    iteration ``t``'s share of the final sum proportional to ``t ** gamma``, so
+    accumulating ``t ** gamma`` directly is the same average with no per-
+    iteration sweep over the (large) information-set table.  ``gamma = 1`` is
+    the linear averaging of plain CFR+.
+
+    Discounting matters more here than in an exact solver: with chance
+    sampling, early iterations average over a handful of deals, so their
+    strategies are mostly sampling noise.  Weighting late iterations more
+    heavily discards that noise.  ``gamma = 2`` was measured to cut the bot's
+    best-response exploitability by ~2.5 bb/100 (see the 2026-07-29 entry in
+    ``EXPERIMENTS.md``, which also reports the regret discount ``alpha``
+    sweep — it made no difference and was not adopted).
+    """
+
+    def __init__(self, game: NLHEGame, tree: Optional[CompiledBettingTree] = None,
+                 gamma: float = 2.0):
         self.game = game
         self.tree = tree or CompiledBettingTree.build(game)
         self.nodes: Dict[Tuple[int, object], _Node] = {}
         self.iterations = 0
+        self.gamma = gamma
 
     def run(self, iterations: int, rng: Optional[random.Random] = None) -> None:
         rng = rng or random.Random()
         ab = self.game.abstraction
         deal = self.game.deal
         root = self.tree.root
+        gamma = self.gamma
         for _ in range(iterations):
             self.iterations += 1
+            t = float(self.iterations)
+            # Weight of this iteration's contribution to the average strategy.
+            tg = t if gamma == 1.0 else t ** gamma
             hole, board = deal(rng)
-            self._cfr(root, 1.0, 1.0, float(self.iterations), hole, board,
-                      ab, {}, [None])
+            self._cfr(root, 1.0, 1.0, tg, hole, board, ab, {}, [None])
 
     def _cfr(self, nid, r0, r1, t, hole, board, ab, bucket_cache, sign):
         tree = self.tree
