@@ -15,6 +15,129 @@ Metrics legend (all from `pokerbot.metrics.flatten`):
 
 ---
 
+## 2026-07-30 — board-texture-conditioned strength percentiles
+
+**Idea:** the post-flop abstraction bucketed hands by **absolute** made-hand
+strength — the evaluator's 1..7462 rank — into equal-probability buckets whose
+boundaries were learned once from the *marginal* distribution over all boards.
+Absolute strength is not comparable across boards. On a paired or three-suited
+flop nearly every holding makes two pair or better, so a hand that is merely
+average *for that board* still scores in the top absolute percentiles; on a dry
+rainbow flop top pair is a monster but scores mid-table. Made the bucket
+boundaries **conditional on a cheap board-texture class** (`_board_texture` in
+`nlhe_abstraction.py`: 3 bits — board paired / 3+ of one suit / 3+ ranks inside
+a 5-rank window, ace playing low), so bucket `b` means "the `b`-th eighth of
+holdings *on a board like this one*". `texture_aware=True` is now the default;
+`samples` went 30k → 60k so the rarer texture cells still get a few thousand
+hands each, and a cell below `MIN_TEXTURE_SAMPLES = 2000` falls back to the
+street's pooled cuts (that fallback covers ≤4% of boards per street).
+
+**Hypothesis:** this is a *free* abstraction upgrade — the texture is
+deliberately kept **out** of the information-set key, so hands of equal
+*relative* strength are pooled (which is what an equal-probability abstraction
+is supposed to express) and the info-set count does not move. Both bots have
+5,772 info sets, so any difference is abstraction quality, not extra capacity.
+
+**How badly the old cuts collapsed.** Share of holdings per bucket on a *paired
+flop* (8 buckets, target 12.5% each):
+
+| | b0 | b1 | b2 | b3 | b4 | b5 | b6 | b7 |
+|---|---|---|---|---|---|---|---|---|
+| absolute cuts | 0.0 | 0.0 | 0.0 | 0.3 | 22.0 | 21.1 | 21.5 | 35.1 |
+| texture cuts | 12.4 | 12.5 | 11.9 | 12.4 | 12.2 | 12.9 | 12.5 | 13.2 |
+
+Four of the eight buckets were unreachable on a paired board — half the
+abstraction's resolution was being thrown away exactly where hand-reading is
+hardest. On a dry unpaired flop the old cuts skewed the other way
+(13.6/16.6/15.4/15.6/10.8/10.2/10.4/7.5). `tests/test_nlhe.py` pins this.
+
+**Setup:** identical to baseline in every other respect (heads-up 20 BB, pot +
+all-in, 169 pre-flop buckets, 8 post-flop strength buckets × draw feature,
+`gamma=2` DCFR averaging, same `level="standard"` budgets). The baseline arm was
+run from a **pristine `git worktree` at HEAD**, not from a flag, so it is the
+committed code exactly; it reproduced the committed 2026-07-29 history row
+digit-for-digit (1.543 / 5772 / 67.40 / 107.57 / 60.08 / −2.44 / 61.5) and its
+seed-1 exploitability reproduced that entry's +1.755.
+
+**Before → after** (`level=standard`, seed 0 — the row appended to
+`metrics_history.csv`):
+
+| Metric | Baseline | Candidate | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 1.543 | **1.141** | **−0.402** |
+| `win_vs_random` | +67.40 (CI ±16.20) | +70.76 (±16.53) | +3.36 |
+| `win_vs_call_station` | +107.57 (±17.68) | +116.42 (±17.31) | +8.85 |
+| `win_vs_maniac` | +60.08 (±18.61) | +60.67 (±18.83) | +0.59 |
+| `win_vs_tight_aggressive` | **−2.44** (±13.79, not significant) | **+13.79** (±13.56, **significant**) | **+16.23** |
+| `nlhe_infosets` | 5,772 | 5,772 | unchanged (same key space, by design) |
+| `kuhn_exploitability` / `leduc_exploitability` | 0.002265 / 0.0046 | 0.002265 / 0.0046 | unchanged (untouched code path) |
+| `pushfold_jam_pct` | 61.5 | 61.5 | unchanged (push/fold is pre-flop-only) |
+
+**Independent seed 1** (same level, both arms re-run):
+
+| Metric | Baseline | Candidate | Δ |
+|---|---|---|---|
+| `nlhe_exploitability_bb100` | 1.755 | 1.568 | −0.187 |
+| `win_vs_random` | +62.31 (±16.61) | +81.29 (±16.43) | +18.98 |
+| `win_vs_call_station` | +115.45 (±17.89) | +126.28 (±17.55) | +10.83 |
+| `win_vs_maniac` | +57.23 (±19.13) | +71.43 (±18.82) | +14.21 |
+| `win_vs_tight_aggressive` | −5.78 (±13.79) | +11.51 (±13.71) | **+17.29** |
+| `pushfold_jam_pct` | 63.9 | 63.9 | unchanged |
+
+**Is it signal?** The TAG swing is +16.23 and +17.29 on two independent seeds —
+sign-consistent, near-identical in magnitude, and both larger than either side's
+95% CI half-width (~±13.7). On both seeds the bot crosses from *losing* to TAG
+to *beating* it (significantly so on seed 0). **Every** `win_vs_*` category
+improved on **both** seeds — eight of eight — which is not what a noise wiggle
+looks like. Exploitability also fell on both seeds (−0.402, −0.187); each is
+individually inside the routine's 1–2 bb/100 noise band, so the gate is carried
+by the TAG metric, with exploitability recorded as directionally consistent
+rather than as evidence.
+
+**Gate check:**
+- `python -m pytest -q` green: **44 passed** (3 new in `tests/test_nlhe.py`:
+  `_board_texture` on hand-checked boards, the paired-board bucket-collapse
+  property above, and cross-instance determinism of the abstraction).
+- Invariants: Kuhn value −0.055572 (analytic −1/18) and exploitability 0.002265
+  unchanged; Leduc 0.0046 unchanged and still decreasing; bot beats
+  random / call-station / maniac by a wide **significant** margin on both seeds
+  (all three improved on both); best-response exploitability ends **positive**
+  on both seeds (+1.141, +1.568), so invariant 5 holds. The search path is
+  untouched and `tests/test_subgame.py` still pins invariant 6.
+- Primary metric: `win_vs_tight_aggressive` improves by more than its CI, twice.
+- No regression: **no** `win_vs_*` category dropped on either seed, and
+  exploitability moved down, not up.
+
+**Caveats / honest limits:**
+- The exploitability gain is small and inside the single-measurement noise band.
+  The honest reading is "clearly better against the baseline panel, no worse
+  against a best response" — not "measurably closer to Nash".
+- Unlike the 2026-07-29 change, the best-response curve does **not** shift down
+  uniformly; it crosses. Seed 0 baseline `[−30.08, −19.46, −10.52, −2.77,
+  +1.54]` vs candidate `[−30.12, −18.85, −10.11, −2.92, +1.14]` at
+  10k/25k/50k/100k/150k exploiter iterations. Only the converged end favours the
+  candidate, so the claim rests on the endpoint of a curve that is still rising.
+- The texture class is a 3-bit hand-picked heuristic, not a learned one. A
+  proper potential-aware (Monte-Carlo equity) abstraction — backlog item 8 —
+  subsumes both this and the draw feature and is still open; the blocker is
+  cost, since exact hand strength needs ~1081 evaluator calls per board.
+- Rare texture cells (≈1–4% of boards per street, e.g. a flush-*and*-straight
+  flop) still fall back to pooled cuts. Raising `samples` further, or merging
+  rare cells into their nearest neighbour, would close that.
+- Texture is not in the info-set key, so the bot cannot condition its *betting*
+  on board texture beyond what the relative-strength bucket implies. Adding it
+  to the key is a separate (info-set-growing) experiment.
+- `EVALUATION.md` section 4b still reports a **negative** number (−2.52 →
+  −2.54, unchanged within noise) because it runs its own shorter 120k-iteration
+  exploiter. That was already flagged on 2026-07-29 as an under-converged
+  measurement rather than a usable exploitability; it is unaffected by this
+  change and still wants its budget raised.
+
+**Verdict: IMPROVEMENT.** Kept `texture_aware=True` as the `StrengthAbstraction`
+default, regenerated `EVALUATION.md` and `figures/` at `level=standard`.
+
+---
+
 ## 2026-07-29 — DCFR strategy-averaging discount in the NLHE trainer
 
 **Idea:** backlog item 5 ("DCFR tuning"). The exact solvers (`CFRSolver`,

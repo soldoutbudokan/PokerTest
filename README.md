@@ -99,9 +99,14 @@ figure, and the report all change).
   information-set table, so it costs nothing.
 - The NLHE bot uses an **action abstraction** (pot-sized bet + all-in) and a
   **card abstraction** (lossless 169 pre-flop hands + made-hand-strength buckets
-  post-flop). The post-flop abstraction ignores draw potential — a documented
-  approximation that trades some strength for the speed needed to train in pure
-  Python.
+  post-flop). The post-flop buckets are refined by a redraw-potential feature on
+  the flop/turn, and their boundaries are **conditioned on board texture**
+  (paired / flush-possible / straight-possible), so a bucket means "this
+  percentile *on this kind of board*" rather than a raw evaluator percentile —
+  without the texture entering the information-set key, so the abstraction gets
+  sharper at no extra size. What it still approximates away is exact hand
+  strength (equity against the opponent's actual range), which needs ~1081
+  evaluator calls per board — too slow to train in pure Python.
 - The betting tree's *structure* is card-independent, so it is **compiled once**
   and each Monte-Carlo deal only plugs in the showdown winner and the card
   buckets — about a 20× speedup over walking game objects.

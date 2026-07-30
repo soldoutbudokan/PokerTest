@@ -56,7 +56,7 @@ once.
 
 | You change… | …and these change / must be re-checked |
 |---|---|
-| **The card abstraction** (`nlhe_abstraction.py` buckets) | Information-set keys change ⇒ the trained bot, its size, win rates, exploitability, push/fold and pre-flop grids, the figures, and `EVALUATION.md`. Re-train + regenerate everything. `StrengthAbstraction` thresholds are sampled with a fixed seed — changing `samples`/`seed`/`postflop_buckets` reshuffles all buckets. |
+| **The card abstraction** (`nlhe_abstraction.py` buckets) | Information-set keys change ⇒ the trained bot, its size, win rates, exploitability, push/fold and pre-flop grids, the figures, and `EVALUATION.md`. Re-train + regenerate everything. `StrengthAbstraction` thresholds are sampled with a fixed seed — changing `samples`/`seed`/`postflop_buckets`/`draw_aware`/`texture_aware` reshuffles all buckets. |
 | **The action abstraction / NLHE config** (`bet_sizes`, `stack`, `max_raises`) in `metrics.py`/`evaluate.py` | Betting tree shape changes ⇒ compiled tree, bot, all NLHE metrics and figures. Bigger trees train slower. |
 | **The solver** (`cfr.py`/`tree.py`/`mccfr.py`/`nlhe_tree.py` update rule) | Convergence curves (Kuhn/Leduc), the bot, exploitability. **Guardrails:** Kuhn must still reach the analytic Nash (value −1/18, low exploitability) and Leduc exploitability must still fall — `tests/test_kuhn_leduc.py` enforces this. |
 | **The evaluator** (`evaluator.py`) | Everything that scores showdowns. `tests/test_evaluator.py` (exhaustive frequency counts) must pass — if it fails, stop. |

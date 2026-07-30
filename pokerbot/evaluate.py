@@ -160,7 +160,9 @@ def section_nlhe(rep: Report, train_iters: int, eval_pairs: int,
     bot = trainer.average_strategy()
     rep.add(f"**Setup**: heads-up, 20 BB effective, pot-sized bets + all-in, "
             f"made-hand-strength card abstraction (169 pre-flop + 8 post-flop "
-            f"buckets/street). Trained with chance-sampling MCCFR for "
+            f"buckets/street, split by redraw potential on the flop/turn, with "
+            f"bucket boundaries conditioned on board texture). Trained with "
+            f"chance-sampling MCCFR for "
             f"**{train_iters:,} deals** "
             f"({len(trainer.nodes):,} info sets, {time.time() - t0:.0f}s).")
     rep.add()

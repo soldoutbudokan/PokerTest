@@ -9,7 +9,9 @@ from pokerbot.cards import parse_cards
 from pokerbot.eval.arena import play_match
 from pokerbot.games.nlhe import (ALL_IN, CALL, FOLD, RAISE_BASE, NLHEConfig,
                                  NLHEGame)
-from pokerbot.games.nlhe_abstraction import NullAbstraction, preflop_index
+from pokerbot.games.nlhe_abstraction import (NullAbstraction,
+                                             StrengthAbstraction,
+                                             _board_texture, preflop_index)
 
 
 def _fixed_deal():
@@ -80,6 +82,67 @@ def test_preflop_index_canonical():
         for c1 in range(c0 + 1, 52):
             seen.add(preflop_index((c0, c1)))
     assert seen == set(range(169))
+
+
+def test_board_texture_classifies_known_boards():
+    def tex(s):
+        return _board_texture(parse_cards(s))
+
+    assert tex("2c 7d Th") == 0                    # dry, rainbow, disconnected
+    assert tex("2c 2d Th") == 1                    # paired
+    assert tex("2c 7c Tc") == 2                    # three of a suit
+    assert tex("2c 3d 4h") == 4                    # three ranks in a 5-window
+    assert tex("Ac 2d 3h") == 4                    # the ace plays low too
+    assert tex("2c 3c 4c") == 2 | 4                # flush *and* straight board
+    assert tex("2c 2d 3h 4s Kc") == 1 | 4          # paired and connected
+
+
+def _bucket_shares(ab, street, n_board, texture, n=6000):
+    """Share of hands (%) landing in each post-flop bucket, restricted to
+    boards of one texture class."""
+    from collections import Counter
+    rng = random.Random(7)
+    counts, got = Counter(), 0
+    while got < n:
+        deck = list(range(52))
+        rng.shuffle(deck)
+        board = tuple(deck[2:7])
+        if _board_texture(list(board[:n_board])) != texture:
+            continue
+        got += 1
+        counts[ab.bucket((deck[0], deck[1]), board, street)[1]] += 1
+    return [100.0 * counts[b] / n for b in range(ab.nb)]
+
+
+def test_texture_conditioned_buckets_are_used_on_paired_boards():
+    """Absolute strength percentiles collapse on a paired board — nearly every
+    holding makes two pair or better, so the bottom buckets go unused and the
+    whole range is squeezed into the top few.  Conditioning the cuts on board
+    texture spreads it back out over all buckets."""
+    absolute = StrengthAbstraction(postflop_buckets=8, draw_aware=False,
+                                   texture_aware=False)
+    textured = StrengthAbstraction(postflop_buckets=8, draw_aware=False,
+                                   texture_aware=True)
+    paired = 1
+    old = _bucket_shares(absolute, 1, 3, paired)
+    new = _bucket_shares(textured, 1, 3, paired)
+
+    # Old: at least three buckets are essentially unreachable on paired flops.
+    assert sum(1 for s in old if s < 1.0) >= 3
+    # New: every bucket is populated and each is near its 12.5% target.
+    assert all(8.0 <= s <= 17.0 for s in new), new
+
+
+def test_abstraction_is_deterministic_across_instances():
+    a = StrengthAbstraction(postflop_buckets=8)
+    b = StrengthAbstraction(postflop_buckets=8)
+    rng = random.Random(11)
+    for _ in range(300):
+        deck = list(range(52))
+        rng.shuffle(deck)
+        hole, board = (deck[0], deck[1]), tuple(deck[2:7])
+        for street in (0, 1, 2, 3):
+            assert a.bucket(hole, board, street) == b.bucket(hole, board, street)
 
 
 def test_tight_aggressive_beats_random_significantly():

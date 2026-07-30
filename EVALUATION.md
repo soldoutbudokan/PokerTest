@@ -48,21 +48,21 @@ Exploitability decreases monotonically toward 0, confirming the solver converges
 
 ## 4. No-Limit Hold'em bot
 
-**Setup**: heads-up, 20 BB effective, pot-sized bets + all-in, made-hand-strength card abstraction (169 pre-flop + 8 post-flop buckets/street). Trained with chance-sampling MCCFR for **120,000 deals** (5,772 info sets, 85s).
+**Setup**: heads-up, 20 BB effective, pot-sized bets + all-in, made-hand-strength card abstraction (169 pre-flop + 8 post-flop buckets/street, split by redraw potential on the flop/turn, with bucket boundaries conditioned on board texture). Trained with chance-sampling MCCFR for **120,000 deals** (5,772 info sets, 88s).
 
 ### 4a. Win rate vs baseline opponents
 (mirrored/duplicate deals for variance reduction; 95% CI)
 
 | Opponent | bb/100 | mbb/100 | 95% CI (bb/100) | Significant |
 |---|---|---|---|---|
-| random | +67.40 | +67400 | [+51.20, +83.60] | yes |
-| call-station | +107.57 | +107570 | [+89.89, +125.25] | yes |
-| maniac | +60.08 | +60080 | [+41.47, +78.69] | yes |
-| tight-aggressive | -2.44 | -2440 | [-16.23, +11.35] | no |
+| random | +70.76 | +70760 | [+54.23, +87.29] | yes |
+| call-station | +116.42 | +116425 | [+99.11, +133.74] | yes |
+| maniac | +60.67 | +60670 | [+41.84, +79.50] | yes |
+| tight-aggressive | +13.79 | +13785 | [+0.23, +27.34] | yes |
 
 ### 4b. In-abstraction exploitability
 
-A best response trained against the fixed bot (120,000 iterations/seat) wins **-2.52 bb/100 (-2516 mbb/100)** averaged over both seats (seat 0 +2.14, seat 1 -7.17). This is a **lower bound** on the bot's in-abstraction exploitability — how far it sits from the abstract Nash equilibrium — and tightens (rises) as the best response is trained longer. For scale, the bot beats the baselines above by 50–100+ bb/100. [167s]
+A best response trained against the fixed bot (120,000 iterations/seat) wins **-2.54 bb/100 (-2540 mbb/100)** averaged over both seats (seat 0 -0.80, seat 1 -4.28). This is a **lower bound** on the bot's in-abstraction exploitability — how far it sits from the abstract Nash equilibrium — and tightens (rises) as the best response is trained longer. For scale, the bot beats the baselines above by 50–100+ bb/100. [173s]
 
 ### 4c. Short-stack push/fold vs Nash theory
 
@@ -84,4 +84,4 @@ SB jam frequency at 10 BB effective (Nash jams ~60-70% of hands):
 
 Hands jammed >50%: **102/169 = 60%** (Nash 10 BB SB jam range ≈ 60-70%). Strong hands jam ≈1.0, trash folds — qualitatively matching the known push/fold equilibrium.
 
-_Total evaluation time: 290s._
+_Total evaluation time: 299s._
